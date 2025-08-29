@@ -1,0 +1,9 @@
+{
+  "description": "Example of proper input with a real task",
+  "input_with_real_task": [
+    {
+      "output": "{\n  \"intent\": \"create_tasks\",\n  \"chatId\": \"123456\",\n  \"userId\": \"user123\",\n  \"originalMessage\": \"Schedule a 1-hour meeting to review project status\",\n  \"extractedTitle\": \"Review project status meeting\",\n  \"timestamp\": \"2025-08-29T08:00:00Z\",\n  \"queuedAt\": \"2025-08-29T08:00:00Z\",\n  \"dequeuedAt\": \"2025-08-29T08:01:00Z\",\n  \"queueAge\": \"1000\",\n  \"confidence\": 0.9,\n  \"tasks\": [\n    {\n      \"description\": \"Review project status meeting\",\n      \"estimated_duration\": 60,\n      \"time\": null,\n      \"due_date\": null,\n      \"time_preference\": \"flexible\",\n      \"priority\": 5,\n      \"category\": \"meeting\",\n      \"complexity\": \"medium\"\n    }\n  ],\n  \"context\": {\n    \"urgency_indicators\": [],\n    \"time_indicators\": [],\n    \"scope_indicators\": []\n  },\n  \"requires_breakdown\": false,\n  \"needs_research\": false\n}"
+    }
+  ],
+  "note": "This is what proper input should look like. The current input you're testing has empty tasks array and empty strings for all meaningful fields, so the code correctly rejects it."
+}

@@ -1,0 +1,79 @@
+// Calendar Combiner - Combine all calendar events into a single array with timezone normalization
+console.log('=== CALENDAR COMBINER ===');
+console.log('Input items received:', items.length);
+
+// Get the user's timezone from Parse Task node
+const userTimezone = $('Parse Task').first().json.debugInfo.userTimezone || "Europe/Istanbul";
+console.log('User timezone for normalization:', userTimezone);
+
+// Helper function to normalize event times to user timezone
+function normalizeEventTime(event, userTimezone) {
+    if (!event.start || !event.end) return event;
+    
+    // Create normalized event
+    const normalizedEvent = { ...event };
+    
+    // Process start time
+    if (event.start.dateTime) {
+        const startDate = new Date(event.start.dateTime);
+        // Convert to user timezone and format as ISO string without timezone suffix
+        const normalizedStart = startDate.toLocaleString('sv-SE', { timeZone: userTimezone }).replace(' ', 'T');
+        normalizedEvent.start = {
+            ...event.start,
+            dateTime: normalizedStart,
+            timeZone: userTimezone
+        };
+    }
+    
+    // Process end time
+    if (event.end.dateTime) {
+        const endDate = new Date(event.end.dateTime);
+        // Convert to user timezone and format as ISO string without timezone suffix
+        const normalizedEnd = endDate.toLocaleString('sv-SE', { timeZone: userTimezone }).replace(' ', 'T');
+        normalizedEvent.end = {
+            ...event.end,
+            dateTime: normalizedEnd,
+            timeZone: userTimezone
+        };
+    }
+    
+    return normalizedEvent;
+}
+
+// Collect all calendar events
+const allCalendarEvents = [];
+
+for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item && item.json) {
+        // Check if this looks like a calendar event
+        if (item.json.summary || item.json.start || item.json.end) {
+            const normalizedEvent = normalizeEventTime(item.json, userTimezone);
+            allCalendarEvents.push(normalizedEvent);
+            
+            console.log(`Event ${i + 1}: "${normalizedEvent.summary}" (${normalizedEvent.start?.dateTime || normalizedEvent.start?.date})`);
+        } else {
+            console.log(`Item ${i + 1}: Not a calendar event:`, Object.keys(item.json));
+        }
+    } else {
+        console.log(`Item ${i + 1}: Invalid or empty item`);
+    }
+}
+
+console.log(`✅ Combined ${allCalendarEvents.length} calendar events`);
+
+// Return a single item containing all calendar events
+return [{
+    json: {
+        combinedCalendarEvents: allCalendarEvents,
+        totalEvents: allCalendarEvents.length,
+        combinedAt: new Date().toISOString(),
+        userTimezone: userTimezone,
+        debugInfo: {
+            originalItemCount: items.length,
+            validEventCount: allCalendarEvents.length,
+            timezoneNormalization: userTimezone,
+            normalizedAt: new Date().toISOString()
+        }
+    }
+}];

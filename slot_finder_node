@@ -1,0 +1,1209 @@
+// Human-Like Slot Finder with First Principles Logic
+const taskData = items[0].json;
+
+// Validate input structure
+if (!taskData) {
+    console.log('❌ ERROR: No taskData found in input');
+    return [{
+        json: {
+            error: "No input data provided",
+            processing: {
+                slotFinderTimestamp: new Date().toISOString(),
+                error: "Missing taskData in input",
+                status: "failed_no_input"
+            }
+        }
+    }];
+}
+
+// Get the user's timezone from Parse Task node for consistency
+const userTimezone = (() => {
+    try {
+        return $('Parse Task').first().json.debugInfo.userTimezone || "Europe/Istanbul";
+    } catch (e) {
+        console.log('⚠️ Could not get timezone from Parse Task, using fallback');
+        return taskData.userTimezone || "Europe/Istanbul";
+    }
+})();
+
+console.log('=== HUMAN-LIKE SLOT FINDER ===');
+console.log('User timezone:', userTimezone);
+console.log('Input taskData keys:', Object.keys(taskData));
+console.log('extractedTitle:', taskData.extractedTitle);
+console.log('originalMessage:', taskData.originalMessage);
+console.log('output present:', !!taskData.output);
+
+// Debug mode flag - set to true only for testing
+const DEBUG_MODE = false;
+
+// Parse AI result with enhanced fallback
+let aiResult;
+try {
+    if (taskData.output) {
+        console.log('📥 RAW AI OUTPUT (first 500 chars):', taskData.output.substring(0, 500));
+        aiResult = JSON.parse(taskData.output);
+        console.log('📥 PARSED AI RESULT - tasks:', JSON.stringify(aiResult.tasks, null, 2));
+    } else if (taskData.aiResult) {
+        aiResult = taskData.aiResult;
+    } else {
+        console.log('No AI result, creating fallback task');
+        const taskDescription = taskData.extractedTitle || taskData.originalMessage || "Untitled Task";
+        aiResult = {
+            tasks: [{
+                description: taskDescription,
+                estimated_duration: 60,
+                time: null,
+                due_date: null,
+                time_preference: "flexible",
+                priority: 5,
+                category: "general",
+                complexity: "medium"
+            }],
+            userTimezone: userTimezone,
+            chatId: taskData.chatId,
+            userId: taskData.userId,
+            originalMessage: taskData.originalMessage
+        };
+    }
+} catch (e) {
+    console.log('AI parsing failed:', e.message);
+    const taskDescription = taskData.extractedTitle || taskData.originalMessage || "Untitled Task";
+    aiResult = {
+        tasks: [{
+            description: taskDescription,
+            estimated_duration: 60,
+            time: null,
+            priority: 5,
+            category: "general"
+        }],
+        userTimezone: userTimezone,
+        originalMessage: taskData.originalMessage || ""
+    };
+}
+
+console.log('Parsed aiResult:', {
+    tasksCount: aiResult.tasks?.length || 0,
+    firstTaskDescription: aiResult.tasks?.[0]?.description || 'none',
+    firstTaskTime: aiResult.tasks?.[0]?.time || 'none',
+    firstTaskDueDate: aiResult.tasks?.[0]?.due_date || 'none',
+    firstTaskTimePreference: aiResult.tasks?.[0]?.time_preference || 'none',
+    originalMessage: aiResult.originalMessage || 'none'
+});
+
+// Debug: Log the entire first task object
+if (aiResult.tasks && aiResult.tasks.length > 0) {
+    console.log('Full first task object:', JSON.stringify(aiResult.tasks[0], null, 2));
+}
+
+// Check if we have meaningful task data
+const hasValidTaskData = taskData.extractedTitle || taskData.originalMessage || 
+    (aiResult.tasks && aiResult.tasks.length > 0 && aiResult.tasks[0].description && 
+     aiResult.tasks[0].description.trim() !== "" && aiResult.tasks[0].description !== "Untitled Task");
+
+if (!hasValidTaskData && !DEBUG_MODE) {
+    console.log('❌ NO MEANINGFUL TASK DATA - All fields are empty');
+    return [{
+        json: {
+            ...taskData,
+            error: "No meaningful task data provided",
+            finalSlot: null,
+            processing: {
+                slotFinderTimestamp: new Date().toISOString(),
+                userTimezone: userTimezone,
+                error: "Empty task data - cannot schedule",
+                status: "failed_empty_input"
+            }
+        }
+    }];
+} else if (!hasValidTaskData && DEBUG_MODE) {
+    console.log('🐛 DEBUG MODE: Creating test task despite empty input');
+    aiResult = {
+        tasks: [{
+            description: "Test task for debugging",
+            estimated_duration: 60,
+            time: null,
+            priority: 5,
+            category: "general"
+        }],
+        userTimezone: userTimezone,
+        originalMessage: "Debug test task"
+    };
+}
+
+// Validate and enhance tasks
+if (!aiResult.tasks || aiResult.tasks.length === 0) {
+    console.log('No tasks found in AI result, creating default task');
+    const taskDescription = taskData.extractedTitle || taskData.originalMessage || "Untitled Task";
+    
+    // Only create a fallback task if we have meaningful data
+    if (taskDescription && taskDescription.trim() !== "" && taskDescription !== "Untitled Task") {
+        aiResult.tasks = [{
+            description: taskDescription,
+            estimated_duration: 60,
+            time: null,
+            priority: 5,
+            category: "general"
+        }];
+    } else {
+        console.log('❌ Cannot create meaningful task from empty data');
+        return [{
+            json: {
+                ...taskData,
+                error: "No valid task description found",
+                finalSlot: null,
+                processing: {
+                    slotFinderTimestamp: new Date().toISOString(),
+                    userTimezone: userTimezone,
+                    error: "No valid task description - cannot schedule",
+                    status: "failed_no_description"
+                }
+            }
+        }];
+    }
+}
+
+// Enhance task data with missing fields
+for (let task of aiResult.tasks) {
+    console.log('🔧 ENHANCING TASK - Before:', JSON.stringify(task, null, 2));
+    
+    if (!task.description || task.description.trim() === "") {
+        task.description = taskData.extractedTitle || taskData.originalMessage || "Untitled Task";
+    }
+    if (!task.estimated_duration) task.estimated_duration = 60;
+    if (!task.priority) task.priority = 5;
+    if (!task.category) task.category = "general";
+    
+    // CRITICAL FIX: Preserve time and date fields - these should NEVER be overwritten
+    // Only set defaults if they're completely missing (null/undefined), not if they're empty strings
+    if (task.time === null || task.time === undefined) {
+        // Don't set a default time - leave as null to indicate no specific time
+    }
+    if (task.due_date === null || task.due_date === undefined) {
+        // Don't set a default date - leave as null to indicate no specific date
+    }
+    
+    console.log('🔧 ENHANCING TASK - After:', JSON.stringify(task, null, 2));
+}
+
+// Get calendar events
+let calendarEvents = [];
+if (items.length > 1 && items[1]?.json?.combinedCalendarEvents) {
+    calendarEvents = items[1].json.combinedCalendarEvents;
+} else if (items.length > 1) {
+    calendarEvents = items.slice(1).map(item => item.json);
+}
+
+console.log('Calendar events loaded:', calendarEvents.length);
+
+// STEP 1: Enhanced Intent Parsing
+function parseUserIntent(originalMessage, task) {
+    // FIX #2: Added a fallback `|| ""` to ensure `originalMessage` is always a string.
+    // This acts as a safeguard against the error, even if the source of the undefined value isn't caught.
+    const message = (originalMessage || "").toLowerCase();
+    
+    console.log('🔍 INTENT PARSING DEBUG:');
+    console.log('Task object:', JSON.stringify(task, null, 2));
+    console.log('Task.time value:', task.time, 'type:', typeof task.time);
+    console.log('Task.due_date value:', task.due_date, 'type:', typeof task.due_date);
+    console.log('!!task.time:', !!task.time);
+    console.log('!!task.due_date:', !!task.due_date);
+    
+    const intent = {
+        // Temporal markers
+        isToday: /امروز|today|الان|now|امشب|tonight/.test(message),
+        isTomorrow: /فردا|tomorrow/.test(message),
+        isUrgent: /فوری|urgent|asap|زود|سریع|quick/.test(message),
+
+        // Time specificity
+        // FIX: The `NaN` error was caused here. The previous check `task.time !== null`
+        // is insufficient because if the `time` property is missing entirely, its value
+        // is `undefined`. `undefined !== null` evaluates to `true`, which incorrectly
+        // told the script that a specific time or date was provided.
+        // This led to an attempt to create a date from an invalid string (e.g., `new Date('undefinedT00:00:00')`),
+        // resulting in an "Invalid Date" object that caused all subsequent calculations to return `NaN`.
+        // Changing the check to `!!task.time` and `!!task.due_date` correctly tests for a truthy
+        // value (i.e., that the property exists and is not null, undefined, or an empty string).
+        hasSpecificTime: !!task.time,
+        hasSpecificDate: !!task.due_date,
+
+        // Context clues
+        isEvening: /شب|عصر|evening|night/.test(message),
+        isMorning: /صبح|morning/.test(message),
+        isAfternoon: /بعدازظهر|afternoon|ظهر/.test(message),
+
+        // Task nature
+        isCreative: /محتوا|content|خلاق|creative|نوشت|write/.test(message),
+        isMeeting: /جلسه|meeting|ملاقات/.test(message),
+        isAdmin: /اداری|admin|form|فرم/.test(message),
+
+        originalMessage: originalMessage
+    };
+
+    console.log('Parsed intent:', intent);
+    return intent;
+}
+
+// STEP 2: Smart Target Date Logic
+function determineTargetDate(task, intent) {
+    const now = new Date();
+    console.log(`Current date/time: ${now.toISOString()}`);
+    console.log(`Current local time: ${now.toString()}`);
+
+    // Explicit date requests take absolute priority
+    if (intent.hasSpecificDate) {
+        console.log('Using explicit due date:', task.due_date);
+        const explicitDate = new Date(task.due_date + 'T00:00:00');
+        console.log('Parsed explicit date:', explicitDate.toDateString());
+        console.log('Explicit date day of week:', explicitDate.getDay());
+        
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        console.log(`Explicit date is: ${dayNames[explicitDate.getDay()]}`);
+        
+        // CRITICAL: Check if explicit date is in the past
+        if (explicitDate < now) {
+            console.log('⚠️ EXPLICIT DATE IS IN THE PAST - interpreting as next occurrence');
+            
+            // Check if it's a day name that should be interpreted as "next Friday" etc.
+            const originalMessage = intent.originalMessage || '';
+            const dayPattern = /(friday|saturday|sunday|monday|tuesday|wednesday|thursday|جمعه|شنبه|یکشنبه|دوشنبه|سه‌شنبه|چهارشنبه|پنج‌شنبه)/i;
+            const dayMatch = originalMessage.match(dayPattern);
+            
+            if (dayMatch) {
+                const nextOccurrence = getNextOccurrenceOfDay(dayMatch[1], now);
+                if (nextOccurrence) {
+                    console.log(`📅 Corrected to next occurrence: ${nextOccurrence.toDateString()}`);
+                    return nextOccurrence;
+                }
+            }
+            
+            // Fallback: add 7 days to get next week
+            explicitDate.setDate(explicitDate.getDate() + 7);
+            console.log(`📅 Fallback: moved to next week: ${explicitDate.toDateString()}`);
+        }
+        
+        return explicitDate;
+    }
+
+    // "Today" enforcement - override time-based logic
+    if (intent.isToday) {
+        console.log('USER EXPLICITLY REQUESTED TODAY - enforcing same day');
+        return now;
+    }
+
+    // "Tomorrow" enforcement
+    if (intent.isTomorrow) {
+        const tomorrow = new Date(now);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        console.log('User requested tomorrow');
+        return tomorrow;
+    }
+
+    // Urgent tasks within 24 hours
+    if (intent.isUrgent) {
+        console.log('Urgent task - prioritizing immediate scheduling');
+        return now;
+    }
+
+    // Default: only move to tomorrow if it's truly impractical (after 10 PM)
+    if (now.getHours() >= 22) {
+        console.log('Very late (after 10 PM) - defaulting to tomorrow');
+        const tomorrow = new Date(now);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        return tomorrow;
+    }
+
+    // Standard case: start with today
+    console.log('Starting with today as default');
+    return now;
+}
+
+// STEP 3: Task-Dependent Buffer Calculation
+function calculateBuffer(task, intent, currentTime) {
+    const now = currentTime || new Date();
+    const hour = now.getHours();
+
+    // Urgent override
+    if (intent.isUrgent) {
+        return 15; // Minimal buffer for urgent tasks
+    }
+
+    // High priority meetings
+    if (task.priority >= 8 || intent.isMeeting) {
+        return 15; // Just prep/wrap-up time
+    }
+
+    // Simple/short tasks
+    if (task.complexity === 'simple' || task.estimated_duration <= 30) {
+        return 30; // Quick transition
+    }
+
+    // Complex/creative tasks need mental shift time
+    if (task.complexity === 'complex' || intent.isCreative) {
+        return 60;
+    }
+
+    // Evening/early morning transitions need more time
+    if (hour <= 7 || hour >= 20) {
+        return 120; // Account for energy transitions
+    }
+
+    // Standard buffer for regular tasks
+    return 30;
+}
+
+// STEP 4: Category-Based Time Preferences
+function getCategoryTimePreferences(task, intent) {
+    // Creative work performs better in afternoon
+    if (intent.isCreative || task.category === 'creative') {
+        return [14, 15, 16, 10, 11]; // 2-4 PM preferred, morning backup
+    }
+
+    // Meetings work best in morning
+    if (intent.isMeeting || task.category === 'meeting') {
+        return [9, 10, 11, 14, 15]; // 9-11 AM preferred
+    }
+
+    // Administrative tasks in early afternoon
+    if (intent.isAdmin || task.category === 'administrative') {
+        return [13, 14, 15, 9, 10]; // 1-3 PM preferred
+    }
+
+    // General productive hours
+    return [9, 10, 14, 15, 11, 16]; // Peak productivity times
+}
+
+// STEP 5: Enhanced Gap Scoring
+function scoreGap(gap, task, intent, preferredHours, targetDate) {
+    let score = 0;
+    const gapStartHour = gap.start.getHours();
+    const gapEndHour = gap.end.getHours();
+
+    // Size scoring (bigger gaps are more flexible)
+    if (gap.duration >= 180) score += 30; // 3+ hour gaps
+    else if (gap.duration >= 90) score += 20; // 1.5+ hour gaps
+    else if (gap.duration >= 60) score += 10; // 1+ hour gaps
+
+    // Time preference scoring
+    for (let i = 0; i < preferredHours.length; i++) {
+        const preferredHour = preferredHours[i];
+        if (gapStartHour <= preferredHour && gapEndHour > preferredHour) {
+            score += (20 - i * 3); // Higher score for earlier preferences
+            break;
+        }
+    }
+
+    // Gap type preferences
+    if (gap.type === 'full_day') score += 25;
+    else if (gap.type === 'between_events') score += 15;
+    else if (gap.type === 'after_last') score += 10;
+    else if (gap.type === 'before_first') score += 5;
+
+    // CRITICAL FIX: Explicit due date priority bonus
+    const gapDate = gap.start.toDateString();
+    const targetDateStr = targetDate.toDateString();
+    const isTargetDay = gapDate === targetDateStr;
+    
+    if (intent.hasSpecificDate && isTargetDay) {
+        score += 100; // MASSIVE bonus for honoring explicit due date
+        console.log(`🎯 EXPLICIT DATE BONUS: +100 for matching requested date ${targetDateStr}`);
+    }
+
+    // Same-day bonus for today requests
+    if (intent.isToday && isTargetDay) {
+        score += 50; // Major bonus for same-day scheduling
+    }
+
+    // Avoid very late or very early slots unless specifically requested
+    if (gapStartHour < 8 && !intent.isMorning) score -= 15;
+    if (gapStartHour >= 19 && !intent.isEvening) score -= 10;
+
+    console.log(`Gap score: ${score} for ${gap.start.toLocaleTimeString()} - ${gap.end.toLocaleTimeString()} (${gap.type}) on ${gapDate}`);
+    return score;
+}
+
+function createTimeSlotInUserTimezone(dateStr, timeStr, durationMinutes = 60) {
+    const startTimeLocal = `${dateStr}T${timeStr}:00`;
+
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    const totalMinutes = hours * 60 + minutes + durationMinutes;
+    const endHours = Math.floor(totalMinutes / 60);
+    const endMins = totalMinutes % 60;
+    const endTimeLocal = `${dateStr}T${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')}:00`;
+
+    return {
+        startTime: startTimeLocal,
+        endTime: endTimeLocal,
+        localStartTime: `${dateStr} ${timeStr}`,
+        localEndTime: `${dateStr} ${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')}`,
+        timezone: userTimezone,
+        duration: durationMinutes
+    };
+}
+
+// Try to resolve time conflicts by adjusting ±1 hour
+function tryResolveTimeConflict(conflictingSlot, events, task, dateStr, duration) {
+    console.log('🔧 CONFLICT RESOLUTION: Trying to adjust time ±1 hour');
+    console.log('🔧 Original conflicting slot:', conflictingSlot.startTime, 'to', conflictingSlot.endTime);
+    console.log('🔧 Number of events to check against:', events.length);
+    
+    const originalTime = conflictingSlot.startTime.split('T')[1].substring(0, 5); // Extract "HH:MM"
+    const [originalHour, originalMinute] = originalTime.split(':').map(Number);
+    
+    // Try adjusting by ±1 hour (earlier first, then later)
+    const adjustments = [
+        { hours: originalHour - 1, label: '1 hour earlier' },
+        { hours: originalHour + 1, label: '1 hour later' }
+    ];
+    
+    for (const adjustment of adjustments) {
+        // Validate hour is within reasonable bounds (7 AM to 10 PM)
+        if (adjustment.hours < 7 || adjustment.hours > 22) {
+            console.log(`⏭️ Skipping ${adjustment.label} - outside working hours (${adjustment.hours}:${originalMinute})`);
+            continue;
+        }
+        
+        const adjustedTimeStr = `${String(adjustment.hours).padStart(2, '0')}:${String(originalMinute).padStart(2, '0')}`;
+        console.log(`🔍 Testing ${adjustment.label}: ${adjustedTimeStr}`);
+        
+        const adjustedSlot = createTimeSlotInUserTimezone(dateStr, adjustedTimeStr, duration);
+        console.log(`🔍 Created test slot: ${adjustedSlot.startTime} to ${adjustedSlot.endTime}`);
+        
+        const hasConflictResult = hasConflict(adjustedSlot, events);
+        const isInPast = isSlotInPast(adjustedSlot, 0); // No buffer for conflict resolution
+        console.log(`🔍 Conflict check result: ${hasConflictResult}`);
+        console.log(`🔍 Past check result: ${isInPast}`);
+        
+        if (!hasConflictResult && !isInPast) {
+            console.log(`✅ CONFLICT RESOLVED: ${adjustment.label} works (${adjustedTimeStr})`);
+            return adjustedSlot;
+        } else {
+            const reasons = [];
+            if (hasConflictResult) reasons.push('conflicts');
+            if (isInPast) reasons.push('in past');
+            console.log(`❌ ${adjustment.label} rejected: ${reasons.join(', ')} (${adjustedTimeStr})`);
+            if (adjustedSlot.conflictDetails) {
+                console.log(`❌ Conflicting with:`, adjustedSlot.conflictDetails.map(c => c.eventTitle));
+            }
+        }
+    }
+    
+    console.log('❌ CONFLICT UNRESOLVABLE: No suitable ±1 hour adjustment found');
+    return null;
+}
+
+function findAvailableGaps(events, targetDateStr, minDuration = 30) {
+    console.log(`Finding gaps for ${targetDateStr} (min duration: ${minDuration}min)`);
+
+    const dayEvents = events
+        .filter(event => {
+            if (!event.start || !event.start.dateTime) return false;
+            const eventDate = event.start.dateTime.split('T')[0];
+            return eventDate === targetDateStr;
+        })
+        .map(event => ({
+            start: new Date(event.start.dateTime),
+            end: new Date(event.end.dateTime),
+            summary: event.summary
+        }))
+        .sort((a, b) => a.start - b.start);
+
+    console.log(`Events on ${targetDateStr}:`, dayEvents.map(e => `${e.summary}: ${e.start.toLocaleTimeString()} - ${e.end.toLocaleTimeString()}`));
+
+    const gaps = [];
+    const workingHours = {
+        start: 7,
+        end: 22
+    };
+    const dayStart = new Date(`${targetDateStr}T${String(workingHours.start).padStart(2, '0')}:00:00`);
+    const dayEnd = new Date(`${targetDateStr}T${String(workingHours.end).padStart(2, '0')}:00:00`);
+
+    console.log(`Working hours: ${dayStart.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()}`);
+
+    if (dayEvents.length === 0) {
+        gaps.push({
+            start: dayStart,
+            end: dayEnd,
+            duration: (dayEnd - dayStart) / (1000 * 60),
+            type: 'full_day'
+        });
+        console.log(`Full day available: ${dayStart.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()} (${(dayEnd - dayStart) / (1000 * 60)} min)`);
+    } else {
+        // Before first event
+        if (dayEvents[0].start > dayStart) {
+            const duration = (dayEvents[0].start - dayStart) / (1000 * 60);
+            if (duration >= minDuration) {
+                gaps.push({
+                    start: dayStart,
+                    end: dayEvents[0].start,
+                    duration: duration,
+                    type: 'before_first'
+                });
+                console.log(`Gap before first event: ${dayStart.toLocaleTimeString()} - ${dayEvents[0].start.toLocaleTimeString()} (${duration} min)`);
+            }
+        }
+
+        // Between events
+        for (let i = 0; i < dayEvents.length - 1; i++) {
+            const gapStart = dayEvents[i].end;
+            const gapEnd = dayEvents[i + 1].start;
+            const duration = (gapEnd - gapStart) / (1000 * 60);
+
+            if (duration >= minDuration) {
+                gaps.push({
+                    start: gapStart,
+                    end: gapEnd,
+                    duration: duration,
+                    type: 'between_events'
+                });
+                console.log(`Gap between events: ${gapStart.toLocaleTimeString()} - ${gapEnd.toLocaleTimeString()} (${duration} min)`);
+            }
+        }
+
+        // After last event
+        const lastEvent = dayEvents[dayEvents.length - 1];
+        if (lastEvent.end < dayEnd) {
+            const duration = (dayEnd - lastEvent.end) / (1000 * 60);
+            if (duration >= minDuration) {
+                gaps.push({
+                    start: lastEvent.end,
+                    end: dayEnd,
+                    duration: duration,
+                    type: 'after_last'
+                });
+                console.log(`Gap after last event: ${lastEvent.end.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()} (${duration} min)`);
+            }
+        }
+    }
+
+    console.log(`Found ${gaps.length} gaps on ${targetDateStr}`);
+    return gaps;
+}
+
+function hasConflict(slot, events) {
+    // FIX: The error "Invalid time value" was caused by manually adding a timezone
+    // offset ("+03:00"). While this might work in some browsers, it's not a
+    // universally recognized standard and can fail in different JavaScript environments.
+    // The robust solution is to pass the local time string (e.g., "2025-08-29T14:00:00")
+    // directly to the Date constructor. The JavaScript engine correctly interprets
+    // this as a local time in the environment where the code is running.
+    // Since the calendar event times are full ISO strings with timezone info,
+    // the comparison between the two types of dates remains accurate.
+    const slotStart = new Date(slot.startTime);
+    const slotEnd = new Date(slot.endTime);
+
+    console.log(`🔍 Checking conflicts for slot: ${slotStart.toLocaleString()} - ${slotEnd.toLocaleString()}`);
+
+    const conflicts = [];
+    for (const event of events) {
+        if (!event.start || !event.end) continue;
+
+        const eventStart = new Date(event.start.dateTime || event.start.date);
+        const eventEnd = new Date(event.end.dateTime || event.end.date);
+
+        console.log(`📅 Checking against event: "${event.summary}" ${eventStart.toLocaleString()} - ${eventEnd.toLocaleString()}`);
+
+        if (slotStart < eventEnd && slotEnd > eventStart) {
+            conflicts.push({
+                eventTitle: event.summary,
+                eventStart: event.start.dateTime,
+                eventEnd: event.end.dateTime
+            });
+            console.log(`❌ CONFLICT DETECTED with "${event.summary}"`);
+        }
+    }
+
+    console.log(`Conflicts found: ${conflicts.length}`);
+    slot.conflictDetails = conflicts;
+    return conflicts.length > 0;
+}
+
+// Timezone-safe helper function to get YYYY-MM-DD from a Date object
+function getLocalDateString(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+// CRITICAL: Universal past-time validation
+function isSlotInPast(slot, bufferMinutes = 0) {
+    const now = new Date();
+    const slotStart = new Date(slot.startTime);
+    const cutoff = new Date(now.getTime() + bufferMinutes * 60 * 1000);
+    
+    const isPast = slotStart <= cutoff;
+    
+    if (isPast) {
+        console.log(`🚫 PAST SLOT DETECTED:`);
+        console.log(`   Now: ${now.toLocaleString()}`);
+        console.log(`   Slot: ${slotStart.toLocaleString()}`);
+        console.log(`   Cutoff (with buffer): ${cutoff.toLocaleString()}`);
+        console.log(`   Slot is ${Math.round((cutoff - slotStart) / (1000 * 60))} minutes in the past`);
+    }
+    
+    return isPast;
+}
+
+// Fix date interpretation for day names (Friday should be NEXT Friday if today is Friday)
+function getNextOccurrenceOfDay(dayName, referenceDate = new Date()) {
+    const dayMap = {
+        'sunday': 0, 'monday': 1, 'tuesday': 2, 'wednesday': 3, 
+        'thursday': 4, 'friday': 5, 'saturday': 6,
+        'یکشنبه': 0, 'دوشنبه': 1, 'سه‌شنبه': 2, 'چهارشنبه': 3,
+        'پنج‌شنبه': 4, 'جمعه': 5, 'شنبه': 6
+    };
+    
+    const targetDay = dayMap[dayName.toLowerCase()];
+    if (targetDay === undefined) return null;
+    
+    const today = referenceDate.getDay();
+    let daysToAdd = targetDay - today;
+    
+    // If it's the same day, move to next week
+    if (daysToAdd <= 0) {
+        daysToAdd += 7;
+    }
+    
+    const nextOccurrence = new Date(referenceDate);
+    nextOccurrence.setDate(nextOccurrence.getDate() + daysToAdd);
+    
+    console.log(`📅 Day interpretation: "${dayName}" → Next ${Object.keys(dayMap)[targetDay]} (${nextOccurrence.toDateString()})`);
+    return nextOccurrence;
+}
+
+
+// STEP 6: Master Slot Finding Algorithm
+function findOptimalSlot(task, events, userTimezone, originalMessage) {
+    console.log(`\n=== FINDING SLOT FOR: "${task.description}" ===`);
+
+    const intent = parseUserIntent(originalMessage, task);
+    const targetDate = determineTargetDate(task, intent);
+    const buffer = calculateBuffer(task, intent);
+    const preferredHours = getCategoryTimePreferences(task, intent);
+    const duration = task.estimated_duration || 60;
+
+    console.log(`Target date: ${targetDate.toDateString()}`);
+    console.log(`Buffer required: ${buffer} minutes`);
+    console.log(`Preferred hours: ${preferredHours.join(', ')}`);
+
+    const now = new Date();
+    const bufferCutoff = new Date(now.getTime() + buffer * 60 * 1000);
+
+    // PRIORITY 1: Handle explicit time requests
+    if (intent.hasSpecificTime) {
+        console.log('🎯 EXPLICIT TIME REQUEST - attempting to honor');
+        console.log(`Requested time: ${task.time}`);
+        console.log(`Requested date: ${task.due_date || 'none (will use target date)'}`);
+        
+        const requestedDate = intent.hasSpecificDate ? targetDate : now;
+        // FIX: Use the timezone-safe helper function to prevent UTC conversion errors.
+        const dateStr = getLocalDateString(requestedDate);
+
+        console.log(`Final requested date string: ${dateStr}`);
+        console.log(`Creating slot for: ${dateStr}T${task.time}:00`);
+
+        const explicitSlot = createTimeSlotInUserTimezone(dateStr, task.time, duration);
+
+        console.log(`Created explicit slot: ${explicitSlot.startTime} - ${explicitSlot.endTime}`);
+
+        // CRITICAL: Check if the slot is in the past FIRST
+        if (isSlotInPast(explicitSlot, buffer)) {
+            console.log('🚫 REQUESTED TIME IS IN THE PAST - finding future alternative');
+            
+            // If user requested a specific day + time, try same time on next week
+            if (intent.hasSpecificDate) {
+                const nextWeekDate = new Date(requestedDate);
+                nextWeekDate.setDate(nextWeekDate.getDate() + 7);
+                const nextWeekDateStr = getLocalDateString(nextWeekDate);
+                
+                console.log(`🔄 Trying same time next week: ${nextWeekDateStr} at ${task.time}`);
+                const nextWeekSlot = createTimeSlotInUserTimezone(nextWeekDateStr, task.time, duration);
+                
+                if (!isSlotInPast(nextWeekSlot, buffer) && !hasConflict(nextWeekSlot, events)) {
+                    console.log('✅ NEXT WEEK SLOT WORKS');
+                    return {
+                        ...nextWeekSlot,
+                        isPreferred: true,
+                        hasConflict: false,
+                        strategyUsed: 'explicit_time_next_week',
+                        dayOffset: 7,
+                        taskDescription: task.description,
+                        adjustmentNote: 'Moved to next week because requested time was in the past'
+                    };
+                }
+            }
+            
+            // Fallback: find next available slot
+            console.log('🔄 Finding next available future slot...');
+            // Fall through to the general search logic below
+        } else {
+            // Original logic for non-past slots
+            // Check if it violates buffer (only for same day)
+            const isToday = dateStr === getLocalDateString(now);
+            const slotTime = new Date(explicitSlot.startTime);
+
+            console.log(`Is today: ${isToday}, Slot time: ${slotTime.toLocaleString()}, Buffer cutoff: ${bufferCutoff.toLocaleString()}`);
+
+            if (!isToday || slotTime > bufferCutoff) {
+                console.log('✅ Time slot is valid (not violating buffer rules)');
+                
+                // Check for conflicts with detailed logging
+                const hasConflicts = hasConflict(explicitSlot, events);
+                
+                if (!hasConflicts) {
+                    console.log('✅ EXPLICIT TIME HONORED - No conflicts found');
+                    return {
+                        ...explicitSlot,
+                        isPreferred: true,
+                        hasConflict: false,
+                        strategyUsed: 'explicit_time_request',
+                        dayOffset: Math.floor((requestedDate - now) / (1000 * 60 * 60 * 24)),
+                        taskDescription: task.description
+                    };
+                } else {
+                    console.log('❌ EXPLICIT TIME HAS CONFLICTS - attempting to resolve by adjusting time');
+                    
+                    // Try to resolve conflict by adjusting time ±1 hour
+                    const resolvedSlot = tryResolveTimeConflict(explicitSlot, events, task, dateStr, duration);
+                    
+                    if (resolvedSlot && !isSlotInPast(resolvedSlot, buffer)) {
+                        console.log('✅ CONFLICT RESOLVED - Found alternative time');
+                        return {
+                            ...resolvedSlot,
+                            isPreferred: false, // Not exactly preferred since it was adjusted
+                            hasConflict: false,
+                            strategyUsed: 'explicit_time_adjusted',
+                            dayOffset: Math.floor((requestedDate - now) / (1000 * 60 * 60 * 24)),
+                            taskDescription: task.description,
+                            adjustmentNote: 'Time adjusted by ±1 hour to avoid conflicts'
+                        };
+                    }
+                    
+                    console.log('❌ CONFLICT UNRESOLVABLE - no suitable adjustment found');
+                    
+                    // If we can't resolve the conflict, return with conflict details
+                    return {
+                        ...explicitSlot,
+                        isPreferred: true,
+                        hasConflict: true,
+                        strategyUsed: 'explicit_time_with_conflict',
+                        dayOffset: Math.floor((requestedDate - now) / (1000 * 60 * 60 * 24)),
+                        taskDescription: task.description,
+                        warning: 'CONFLICT: Your requested time conflicts with existing events',
+                        conflictingEvents: explicitSlot.conflictDetails || []
+                    };
+                }
+            } else {
+                console.log('❌ EXPLICIT TIME VIOLATES BUFFER - will find alternative on same day');
+                
+                // Try to find alternative slot on the same requested date
+                console.log(`🔄 Searching for alternative slots on ${dateStr}`);
+                const sameDayGaps = findAvailableGaps(events, dateStr, duration);
+                
+                if (sameDayGaps.length > 0) {
+                    console.log(`Found ${sameDayGaps.length} alternative gaps on same day`);
+                    const bestSameDayGap = sameDayGaps[0];
+                    const alternativeTime = findOptimalTimeInGap(bestSameDayGap, duration, preferredHours, intent);
+                    const alternativeSlot = createTimeSlotInUserTimezone(dateStr, alternativeTime, duration);
+                    
+                    if (!hasConflict(alternativeSlot, events) && !isSlotInPast(alternativeSlot, buffer)) {
+                        console.log('✅ Found conflict-free alternative on same day');
+                        return {
+                            ...alternativeSlot,
+                            isPreferred: false,
+                            hasConflict: false,
+                            strategyUsed: 'explicit_date_alternative_time',
+                            dayOffset: Math.floor((requestedDate - now) / (1000 * 60 * 60 * 24)),
+                            taskDescription: task.description,
+                            originalRequestedTime: task.time,
+                            adjustmentReason: 'Moved to avoid buffer violation but kept same day'
+                        };
+                    }
+                }
+                
+                console.log('❌ No suitable same-day alternative found');
+            }
+        }
+    }
+
+    // PRIORITY 2: Search within appropriate window
+    const maxDays = intent.isUrgent ? 1 : (intent.isToday ? 1 : 7);
+    const allGapsWithScores = [];
+
+    // CRITICAL FIX: For explicit date requests, prioritize the requested date heavily
+    if (intent.hasSpecificDate) {
+        console.log('🎯 EXPLICIT DATE REQUEST - prioritizing requested date heavily');
+        
+        // Search the requested date first with detailed logging
+        const requestedDateStr = getLocalDateString(targetDate);
+        console.log(`\n🎯 Priority Search - Requested Date: ${requestedDateStr}`);
+        
+        const requestedDateGaps = findAvailableGaps(events, requestedDateStr, duration + buffer);
+        
+        for (const gap of requestedDateGaps) {
+            const score = scoreGap(gap, task, intent, preferredHours, targetDate);
+            allGapsWithScores.push({
+                gap: gap,
+                score: score,
+                dayOffset: 0,
+                dateStr: requestedDateStr,
+                isRequestedDate: true
+            });
+        }
+        
+        // Only search other days if no suitable gaps found on requested date
+        if (allGapsWithScores.length === 0) {
+            console.log('❌ No gaps found on requested date, searching alternatives...');
+        } else {
+            console.log(`✅ Found ${allGapsWithScores.length} gaps on requested date`);
+            // For explicit dates, don't search other days unless requested date has no viable options
+            const viableGaps = allGapsWithScores.filter(g => g.score > 0);
+            if (viableGaps.length > 0) {
+                console.log('✅ Viable gaps found on requested date - skipping other days');
+                // Skip the general search loop
+            } else {
+                console.log('⚠️ No viable gaps on requested date - will search alternatives');
+                allGapsWithScores.length = 0; // Clear low-scoring gaps
+            }
+        }
+    }
+
+    // General search for non-explicit dates OR when explicit date has no viable options
+    if (!intent.hasSpecificDate || allGapsWithScores.length === 0) {
+        for (let dayOffset = 0; dayOffset < maxDays; dayOffset++) {
+            const searchDate = new Date(targetDate);
+            searchDate.setDate(searchDate.getDate() + dayOffset);
+            // FIX: Use the timezone-safe helper function here as well.
+            const dateStr = getLocalDateString(searchDate);
+
+            console.log(`\nSearching day ${dayOffset}: ${dateStr}`);
+
+            const gaps = findAvailableGaps(events, dateStr, duration + buffer);
+
+            for (const gap of gaps) {
+                // Apply buffer constraints for same day
+                // FIX: Ensure 'today' is checked accurately against the local date.
+                const isToday = dateStr === getLocalDateString(now);
+                let effectiveGap = gap;
+
+                if (isToday && gap.start < bufferCutoff) {
+                    if (gap.end <= bufferCutoff) {
+                        console.log('Gap entirely within buffer, skipping');
+                        continue; // Entire gap is within buffer
+                    }
+
+                    // Adjust gap to start after buffer
+                    effectiveGap = {
+                        ...gap,
+                        start: bufferCutoff,
+                        duration: (gap.end - bufferCutoff) / (1000 * 60)
+                    };
+
+                    if (effectiveGap.duration < duration) {
+                        console.log('Adjusted gap too small, skipping');
+                        continue;
+                    }
+                }
+
+                const score = scoreGap(effectiveGap, task, intent, preferredHours, targetDate);
+                allGapsWithScores.push({
+                    gap: effectiveGap,
+                    score: score,
+                    dayOffset: dayOffset,
+                    dateStr: dateStr,
+                    isRequestedDate: false
+                });
+            }
+        }
+    }
+
+    // STEP 7: Select best gap and time within it
+    if (allGapsWithScores.length === 0) {
+        return handleNoSuitableSlot(task, intent, events, targetDate, userTimezone);
+    }
+
+    // Sort by score (highest first)
+    allGapsWithScores.sort((a, b) => b.score - a.score);
+
+    // Debug: Show top 3 scoring gaps
+    console.log('\n📊 TOP SCORING GAPS:');
+    const topGaps = allGapsWithScores.slice(0, 3);
+    topGaps.forEach((gapData, index) => {
+        const gap = gapData.gap;
+        console.log(`${index + 1}. ${gapData.dateStr} ${gap.start.toLocaleTimeString()} - ${gap.end.toLocaleTimeString()} | Score: ${gapData.score} | Requested Date: ${gapData.isRequestedDate ? 'YES' : 'NO'}`);
+    });
+
+    const bestGapData = allGapsWithScores[0];
+    const bestGap = bestGapData.gap;
+
+    console.log(`\nSelected best gap (score: ${bestGapData.score}) on ${bestGapData.dateStr}`);
+    if (bestGapData.isRequestedDate) {
+        console.log('✅ SUCCESS: Selected gap is on the requested date!');
+    } else {
+        console.log('⚠️ FALLBACK: Selected gap is NOT on requested date');
+    }
+
+    // Find optimal time within the best gap
+    const optimalTime = findOptimalTimeInGap(bestGap, duration, preferredHours, intent);
+    const slot = createTimeSlotInUserTimezone(bestGapData.dateStr, optimalTime, duration);
+
+    // CRITICAL: Final past-time validation
+    if (isSlotInPast(slot, buffer)) {
+        console.log('🚫 FINAL SLOT IS IN THE PAST - rejecting');
+        return handleNoSuitableSlot(task, intent, events, targetDate, userTimezone);
+    }
+
+    // Final conflict check
+    if (hasConflict(slot, events)) {
+        console.log('❌ Selected slot has conflicts - trying next best gap');
+        // Try next best gap
+        if (allGapsWithScores.length > 1) {
+            return tryNextBestGap(allGapsWithScores.slice(1), duration, preferredHours, intent, events, buffer);
+        }
+        return handleNoSuitableSlot(task, intent, events, targetDate, userTimezone);
+    }
+
+    console.log('✅ OPTIMAL SLOT FOUND');
+    return {
+        ...slot,
+        isPreferred: preferredHours.slice(0, 2).includes(parseInt(optimalTime.split(':')[0])),
+        hasConflict: false,
+        strategyUsed: intent.isToday ? 'same_day_enforced' : 'optimal_gap_selection',
+        dayOffset: bestGapData.dayOffset,
+        taskDescription: task.description,
+        gapType: bestGap.type,
+        gapDuration: bestGap.duration,
+        gapScore: bestGapData.score
+    };
+}
+
+// Helper: Find optimal time within selected gap
+function findOptimalTimeInGap(gap, duration, preferredHours, intent) {
+    const gapStartMinutes = gap.start.getHours() * 60 + gap.start.getMinutes();
+    const gapEndMinutes = gap.end.getHours() * 60 + gap.end.getMinutes() - duration;
+
+    // Try preferred hours in order
+    for (const hour of preferredHours) {
+        const hourMinutes = hour * 60;
+        if (hourMinutes >= gapStartMinutes && hourMinutes <= gapEndMinutes) {
+            return `${String(hour).padStart(2, '0')}:00`;
+        }
+
+        // Try half-hour slots too
+        const halfHourMinutes = hourMinutes + 30;
+        if (halfHourMinutes >= gapStartMinutes && halfHourMinutes <= gapEndMinutes) {
+            return `${String(hour).padStart(2, '0')}:30`;
+        }
+    }
+
+    // If no preferred time fits, use start of gap with small buffer
+    const bufferMinutes = Math.min(15, Math.floor(gap.duration / 6));
+    const startMinutes = gapStartMinutes + bufferMinutes;
+    const hours = Math.floor(startMinutes / 60);
+    const minutes = startMinutes % 60;
+
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+// Helper: Try next best gaps if primary fails
+function tryNextBestGap(remainingGaps, duration, preferredHours, intent, events, buffer = 0) {
+    for (const gapData of remainingGaps) {
+        const optimalTime = findOptimalTimeInGap(gapData.gap, duration, preferredHours, intent);
+        const slot = createTimeSlotInUserTimezone(gapData.dateStr, optimalTime, duration);
+
+        // Check both conflicts AND past-time
+        if (!hasConflict(slot, events) && !isSlotInPast(slot, buffer)) {
+            return {
+                ...slot,
+                isPreferred: false,
+                hasConflict: false,
+                strategyUsed: 'backup_gap_selection',
+                dayOffset: gapData.dayOffset,
+                gapType: gapData.gap.type,
+                gapDuration: gapData.gap.duration,
+                gapScore: gapData.score
+            };
+        } else {
+            console.log(`❌ Gap rejected: conflicts=${hasConflict(slot, events)}, inPast=${isSlotInPast(slot, buffer)}`);
+        }
+    }
+    return null;
+}
+
+// STEP 8: Handle no suitable slot scenarios
+function handleNoSuitableSlot(task, intent, events, targetDate, userTimezone) {
+    console.log('🚨 NO SUITABLE SLOT FOUND - applying emergency logic');
+
+    if (intent.isUrgent) {
+        console.log('URGENT TASK - forcing slot with conflict warning');
+        // Force a slot in the next available gap, even with conflicts
+        const tomorrow = new Date(targetDate);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        // FIX: Use timezone-safe helper for date string.
+        const dateStr = getLocalDateString(tomorrow);
+
+        const emergencySlot = createTimeSlotInUserTimezone(dateStr, "09:00", task.estimated_duration || 60);
+        return {
+            ...emergencySlot,
+            isPreferred: false,
+            hasConflict: true,
+            strategyUsed: 'urgent_force',
+            dayOffset: 1,
+            taskDescription: task.description,
+            warning: 'URGENT: Forced scheduling - may conflict with existing events'
+        };
+    }
+
+    // Extend search to 14 days for non-urgent tasks
+    console.log('Extending search to 14 days...');
+
+    for (let dayOffset = 7; dayOffset < 14; dayOffset++) {
+        const searchDate = new Date(targetDate);
+        searchDate.setDate(searchDate.getDate() + dayOffset);
+        // FIX: Use timezone-safe helper for date string.
+        const dateStr = getLocalDateString(searchDate);
+
+        const gaps = findAvailableGaps(events, dateStr, task.estimated_duration || 60);
+        if (gaps.length > 0) {
+            const firstGap = gaps[0];
+            const timeInGap = findOptimalTimeInGap(firstGap, task.estimated_duration || 60,
+                getCategoryTimePreferences(task, intent), intent);
+
+            const slot = createTimeSlotInUserTimezone(dateStr, timeInGap, task.estimated_duration || 60);
+
+            return {
+                ...slot,
+                isPreferred: false,
+                hasConflict: false,
+                strategyUsed: 'extended_search',
+                dayOffset: dayOffset,
+                taskDescription: task.description,
+                gapType: firstGap.type,
+                warning: 'Scheduled far in advance due to busy calendar'
+            };
+        }
+    }
+
+    // Ultimate fallback
+    console.log('❌ ULTIMATE FALLBACK');
+    const fallbackDate = new Date(targetDate);
+    fallbackDate.setDate(fallbackDate.getDate() + 14);
+    // FIX: Use timezone-safe helper for date string.
+    const dateStr = getLocalDateString(fallbackDate);
+
+    const fallbackSlot = createTimeSlotInUserTimezone(dateStr, "09:00", task.estimated_duration || 60);
+    return {
+        ...fallbackSlot,
+        isPreferred: false,
+        hasConflict: true,
+        strategyUsed: 'ultimate_fallback',
+        dayOffset: 14,
+        taskDescription: task.description,
+        error: 'Could not find suitable slot - please review calendar manually'
+    };
+}
+
+function generateResolutionReason(slot, task, originalMessage) {
+    if (!task || !slot) {
+        return 'Unable to generate resolution reason - missing task or slot data';
+    }
+    
+    const intent = parseUserIntent(originalMessage, task);
+    const reasons = [];
+
+    if (slot.strategyUsed === 'explicit_time_request') {
+        reasons.push("Honored your specific time request");
+    } else if (slot.strategyUsed === 'same_day_enforced') {
+        reasons.push("Scheduled for today as explicitly requested");
+    } else if (slot.strategyUsed === 'optimal_gap_selection') {
+        reasons.push(`Found optimal ${slot.gapType} gap (${Math.floor(slot.gapDuration)} min available)`);
+        if (slot.isPreferred) {
+            reasons.push("time matches your task category preferences");
+        }
+    } else if (slot.strategyUsed === 'urgent_force') {
+        reasons.push("URGENT scheduling - may require calendar adjustments");
+    }
+
+    if (slot.dayOffset === 0 && intent.isToday) {
+        reasons.push("successfully scheduled for same day");
+    } else if (slot.dayOffset > 0) {
+        reasons.push(`moved ${slot.dayOffset} day${slot.dayOffset > 1 ? 's' : ''} ahead`);
+    }
+
+    return reasons.length > 0 ? reasons.join('; ') : 'Standard optimal scheduling';
+}
+
+// Process all tasks
+const tasks = aiResult.tasks || [aiResult];
+const scheduledSlots = [];
+
+console.log(`\n=== PROCESSING ${tasks.length} TASK(S) ===`);
+
+for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    
+    // Validate task has meaningful content
+    if (!task.description || task.description.trim() === "" || task.description === "Untitled Task") {
+        console.log(`❌ Skipping task ${i + 1}: No meaningful description`);
+        scheduledSlots.push({
+            taskIndex: i,
+            error: "No meaningful task description",
+            strategyUsed: "skipped_empty_task",
+            hasConflict: false,
+            taskDescription: task.description || "Empty task"
+        });
+        continue;
+    }
+    
+    console.log(`\n📋 Processing Task ${i + 1}: "${task.description}"`);
+    const slot = findOptimalSlot(task, calendarEvents, userTimezone, aiResult.originalMessage);
+    slot.taskIndex = i;
+    scheduledSlots.push(slot);
+
+    console.log(`\nTask ${i + 1} FINAL RESULT:`, {
+        description: slot.taskDescription,
+        scheduledTime: `${slot.localStartTime} - ${slot.localEndTime}`,
+        strategy: slot.strategyUsed,
+        dayOffset: slot.dayOffset,
+        hasConflict: slot.hasConflict
+    });
+}
+
+console.log('\n=== HUMAN-LIKE SLOT FINDER COMPLETED ===');
+console.log(`Successfully scheduled: ${scheduledSlots.filter(s => !s.hasConflict).length}/${scheduledSlots.length} slots`);
+
+return scheduledSlots.map((slot, index) => ({
+    json: {
+        ...taskData,
+        aiResult: aiResult,
+        finalSlot: slot.error ? {
+            error: slot.error,
+            taskDescription: slot.taskDescription,
+            strategyUsed: slot.strategyUsed,
+            hasConflict: false,
+            skipped: true
+        } : {
+            ...slot,
+            debugConflicts: slot.conflictDetails || [],
+            resolutionReason: generateResolutionReason(slot, tasks[slot.taskIndex], aiResult.originalMessage)
+        },
+        userTimezone: userTimezone,
+        processing: {
+            slotFinderTimestamp: new Date().toISOString(),
+            userTimezone: userTimezone,
+            taskIndex: slot.taskIndex,
+            localStartTime: slot.localStartTime || null,
+            localEndTime: slot.localEndTime || null,
+            calendar_events_checked: calendarEvents.length,
+            strategy_used: slot.strategyUsed,
+            total_tasks_processed: scheduledSlots.length,
+            current_task_index: index + 1,
+            gap_type: slot.gapType || 'none',
+            gap_duration: slot.gapDuration || 0,
+            skipped: !!slot.error
+        }
+    }
+}));
+
+
+
