@@ -1,0 +1,334 @@
+// Enhanced Format Notification with conflict resolution debugging
+const taskData = items[0].json;
+const userTimezone = taskData.userTimezone || taskData.event_metadata?.user_timezone || "Europe/Istanbul";
+
+console.log('=== FORMAT NOTIFICATION WITH DEBUG INFO ===');
+console.log('User timezone:', userTimezone);
+console.log('Full task data:', JSON.stringify(taskData, null, 2));
+
+// Get event data - handle both merged and separate items
+let calendarEvent = null;
+if (items.length > 1 && items[1]?.json) {
+    calendarEvent = items[1].json;
+} else if (taskData.id && taskData.htmlLink) {
+    calendarEvent = taskData;
+} else if (taskData.summary) {
+    calendarEvent = taskData;
+}
+
+// Get detailed slot information from finalSlot (contains rich debugging data)
+const finalSlot = taskData.finalSlot || {};
+const processing = taskData.processing || {};
+
+// Try to extract debug info from event description if finalSlot is empty
+let extractedDebugInfo = {};
+if (Object.keys(finalSlot).length === 0 && calendarEvent?.description) {
+    console.log('📄 Extracting debug info from event description...');
+    const description = calendarEvent.description;
+    
+    // Extract strategy from description
+    const strategyMatch = description.match(/• Strategy: (\w+)/);
+    if (strategyMatch) {
+        extractedDebugInfo.strategyUsed = strategyMatch[1];
+    }
+    
+    // Extract days moved
+    const daysMatch = description.match(/• Moved (\d+) days? ahead/);
+    if (daysMatch) {
+        extractedDebugInfo.dayOffset = parseInt(daysMatch[1]);
+    }
+    
+    // Extract duration
+    const durationMatch = description.match(/⏱️ Duration: (\d+) minutes/);
+    if (durationMatch) {
+        extractedDebugInfo.duration = parseInt(durationMatch[1]);
+    }
+    
+    // Extract timezone
+    const timezoneMatch = description.match(/• User timezone: ([^\\n]+)/);
+    if (timezoneMatch) {
+        extractedDebugInfo.timezone = timezoneMatch[1];
+    }
+    
+    console.log('📊 Extracted debug info:', extractedDebugInfo);
+}
+
+// Merge finalSlot with extracted info
+const enrichedFinalSlot = { ...finalSlot, ...extractedDebugInfo };
+
+// Calculate some debugging info from the calendar event
+if (calendarEvent && Object.keys(enrichedFinalSlot).length === 0) {
+    console.log('🔄 Reconstructing debug info from calendar event...');
+    
+    // Check if this was the preferred time by comparing event start with current time
+    const eventStart = new Date(calendarEvent.start.dateTime);
+    const now = new Date();
+    const daysDiff = Math.ceil((eventStart - now) / (24 * 60 * 60 * 1000));
+    
+    enrichedFinalSlot.dayOffset = Math.max(0, daysDiff);
+    enrichedFinalSlot.isPreferred = daysDiff <= 1; // If scheduled today or tomorrow, likely preferred
+    enrichedFinalSlot.strategyUsed = enrichedFinalSlot.isPreferred ? 'preferred_time' : 'conflict_resolution';
+    enrichedFinalSlot.taskDescription = calendarEvent.summary;
+    
+    // Extract duration from event
+    if (calendarEvent.start.dateTime && calendarEvent.end.dateTime) {
+        const start = new Date(calendarEvent.start.dateTime);
+        const end = new Date(calendarEvent.end.dateTime);
+        enrichedFinalSlot.duration = (end - start) / (1000 * 60); // minutes
+    }
+    
+    console.log('🔧 Reconstructed debug info:', enrichedFinalSlot);
+}
+
+// Get task details from multiple sources
+const taskTitle = calendarEvent?.summary || enrichedFinalSlot.taskDescription || taskData.extractedTitle || "Task";
+const isPreferred = enrichedFinalSlot.isPreferred || false;
+const strategyUsed = enrichedFinalSlot.strategyUsed || 'standard';
+
+console.log('Final slot data:', enrichedFinalSlot);
+console.log('Processing data:', processing);
+
+// Format time in user's timezone
+function formatTimeForUser(isoString, timezone) {
+    try {
+        const date = new Date(isoString);
+        
+        // Get today/tomorrow reference
+        const now = new Date();
+        const today = now.toDateString();
+        const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toDateString();
+        const eventDate = date.toDateString();
+        
+        let dayStr = '';
+        if (eventDate === today) {
+            dayStr = 'today';
+        } else if (eventDate === tomorrow) {
+            dayStr = 'tomorrow';
+        } else {
+            const diffDays = Math.ceil((date - now) / (24 * 60 * 60 * 1000));
+            if (diffDays <= 7) {
+                dayStr = date.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
+            } else {
+                dayStr = date.toLocaleDateString('en-US', { 
+                    weekday: 'short', 
+                    month: 'short', 
+                    day: 'numeric',
+                    timeZone: timezone 
+                });
+            }
+        }
+        
+        const timeStr = date.toLocaleTimeString('en-US', { 
+            hour: 'numeric', 
+            minute: '2-digit',
+            hour12: true,
+            timeZone: timezone
+        });
+        
+        return `${dayStr} at ${timeStr}`;
+        
+    } catch (error) {
+        console.error('Error formatting time:', error);
+        return 'Time formatting error';
+    }
+}
+
+// Get start time from enrichedFinalSlot (most reliable source)
+let startTime;
+if (calendarEvent?.start?.dateTime) {
+    startTime = calendarEvent.start.dateTime;
+} else if (enrichedFinalSlot.startTime) {
+    startTime = enrichedFinalSlot.startTime;
+} else if (taskData.event_metadata?.local_start) {
+    startTime = new Date().toISOString(); // fallback
+} else {
+    startTime = new Date().toISOString();
+}
+
+const formattedTime = formatTimeForUser(startTime, userTimezone);
+
+console.log('Task title:', taskTitle);
+console.log('Formatted time:', formattedTime);
+console.log('Is preferred time:', isPreferred);
+console.log('Strategy used:', strategyUsed);
+
+// Create notification message with detailed conflict resolution debugging
+let message;
+let messageType = 'success';
+
+if (enrichedFinalSlot.hasConflict || strategyUsed === 'fallback') {
+    message = `❓ **Scheduled with Potential Conflict**\n`;
+    message += `📋 "${taskTitle}"\n`;
+    message += `🗓️ **Time:** ${formattedTime}\n`;
+    message += `⚠️ *Please check your calendar for conflicts*`;
+    messageType = 'warning';
+} else if (!isPreferred) {
+    message = `🗓️ **Task Scheduled (Time Adjusted)**\n`;
+    message += `📋 "${taskTitle}"\n`;
+    message += `🕐 **Time:** ${formattedTime}\n`;
+    message += `📅 *Moved to avoid conflicts*`;
+    messageType = 'warning';
+    
+    // Add detailed debugging information for conflict resolution
+    if (enrichedFinalSlot.dayOffset > 0) {
+        message += `\n📆 **Moved ${enrichedFinalSlot.dayOffset} day${enrichedFinalSlot.dayOffset > 1 ? 's' : ''} ahead**`;
+    }
+    
+    if (enrichedFinalSlot.gapType) {
+        const gapTypes = {
+            'before_first': 'scheduled before your first event',
+            'between_events': 'scheduled between existing events',
+            'after_last': 'scheduled after your last event',
+            'full_day': 'scheduled in a completely free day',
+            'extended_hours': 'scheduled in extended hours'
+        };
+        message += `\n🎯 **Slot Choice:** ${gapTypes[enrichedFinalSlot.gapType] || enrichedFinalSlot.gapType}`;
+    }
+    
+    if (enrichedFinalSlot.durationModified) {
+        message += `\n⏱️ **Duration Adjusted:** Reduced to ${enrichedFinalSlot.duration} minutes to fit schedule`;
+    }
+    
+    // Add strategy explanation
+    const strategies = {
+        'preferred_time': 'Your preferred time was available',
+        'standard_gap': 'Found gap in working hours (9 AM - 6 PM)',
+        'extended_hours_gap': 'Found gap in extended hours (7 AM - 10 PM)',
+        'fallback': 'Used fallback scheduling due to conflicts',
+        'conflict_resolution': 'Moved to avoid calendar conflicts'
+    };
+    
+    if (strategies[strategyUsed]) {
+        message += `\n🔄 **Strategy:** ${strategies[strategyUsed]}`;
+    }
+} else {
+    message = `✅ **Task Successfully Scheduled**\n`;
+    message += `📋 "${taskTitle}"\n`;
+    message += `🕐 **Time:** ${formattedTime}`;
+    messageType = 'success';
+}
+
+// Add duration information
+if (enrichedFinalSlot.duration) {
+    message += `\n⏱️ **Duration:** ${enrichedFinalSlot.duration} minutes`;
+}
+
+// Add timezone for clarity
+message += `\n🌍 **Timezone:** ${userTimezone}`;
+
+// Add temporary debugging section for conflict resolution
+if (enrichedFinalSlot.strategyUsed || processing.calendar_events_checked !== undefined || enrichedFinalSlot.dayOffset > 0) {
+    message += `\n\n🔧 **DEBUG INFO (Temporary)**`;
+    
+    if (processing.calendar_events_checked !== undefined) {
+        message += `\n📊 Calendar events checked: ${processing.calendar_events_checked}`;
+    }
+    
+    if (enrichedFinalSlot.strategyUsed) {
+        message += `\n🎯 Resolution strategy: ${enrichedFinalSlot.strategyUsed}`;
+    }
+    
+    if (enrichedFinalSlot.resolutionReason) {
+        message += `\n💡 Resolution reason: ${enrichedFinalSlot.resolutionReason}`;
+    }
+    
+    if (enrichedFinalSlot.dayOffset !== undefined && enrichedFinalSlot.dayOffset > 0) {
+        message += `\n📅 Days moved forward: ${enrichedFinalSlot.dayOffset}`;
+    }
+    
+    if (enrichedFinalSlot.gapType) {
+        message += `\n🕳️ Gap type used: ${enrichedFinalSlot.gapType}`;
+    }
+    
+    if (enrichedFinalSlot.durationModified) {
+        message += `\n⚙️ Duration was modified: Yes`;
+    }
+    
+    if (enrichedFinalSlot.warning) {
+        message += `\n⚠️ Warning: ${enrichedFinalSlot.warning}`;
+    }
+    
+    // Show conflict details if any
+    if (enrichedFinalSlot.debugConflicts && enrichedFinalSlot.debugConflicts.length > 0) {
+        message += `\n🚫 Conflicts detected: ${enrichedFinalSlot.debugConflicts.length}`;
+        enrichedFinalSlot.debugConflicts.forEach((conflict, idx) => {
+            if (idx < 3) { // Show only first 3 conflicts to avoid message bloat
+                message += `\n   ${idx + 1}. ${conflict.eventTitle} (${conflict.eventStartLocal})`;
+            }
+        });
+        if (enrichedFinalSlot.debugConflicts.length > 3) {
+            message += `\n   ... and ${enrichedFinalSlot.debugConflicts.length - 3} more`;
+        }
+    } else {
+        // If no detailed conflicts, show that conflicts were detected based on day offset
+        if (enrichedFinalSlot.dayOffset > 0 && !isPreferred) {
+            message += `\n🚫 Conflicts detected: Yes (moved ${enrichedFinalSlot.dayOffset} days)`;
+        }
+    }
+    
+    // Add original requested vs final time comparison
+    if (taskData.aiResult?.tasks?.[0]?.time && enrichedFinalSlot.startTime) {
+        const originalTime = taskData.aiResult.tasks[0].time;
+        const finalTime = new Date(enrichedFinalSlot.startTime).toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: false,
+            timeZone: userTimezone
+        });
+        message += `\n🔄 Requested: ${originalTime} → Scheduled: ${finalTime}`;
+    } else if (calendarEvent?.start?.dateTime) {
+        // Extract time from calendar event
+        const eventTime = new Date(calendarEvent.start.dateTime);
+        const finalTime = eventTime.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: false,
+            timeZone: userTimezone
+        });
+        message += `\n⏰ Final scheduled time: ${finalTime}`;
+    }
+    
+    // Add conflict resolution summary
+    if (enrichedFinalSlot.dayOffset > 0) {
+        message += `\n📈 Conflict resolution: Task moved ${enrichedFinalSlot.dayOffset} day${enrichedFinalSlot.dayOffset > 1 ? 's' : ''} to avoid conflicts`;
+    }
+}
+
+// Add calendar link if available
+if (calendarEvent?.htmlLink) {
+    message += `\n\n🔗 [View in Google Calendar](${calendarEvent.htmlLink})`;
+}
+
+message += `\n\n🔔 *You'll receive reminders 15 and 5 minutes before*`;
+
+console.log('Generated message with debug info:', message);
+
+return [{
+    json: {
+        chatId: taskData.user_id || taskData.chatId,
+        message: message,
+        messageType: messageType,
+        
+        // For Telegram API
+        text: message.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\*(.*?)\*/g, '<i>$1</i>'),
+        parse_mode: 'HTML',
+        
+        // Enhanced debug info with conflict resolution details
+        debugInfo: {
+            formatNotificationTimestamp: new Date().toISOString(),
+            userTimezone: userTimezone,
+            formattedTime: formattedTime,
+            originalStartTime: startTime,
+            conflictResolution: {
+                isPreferred: isPreferred,
+                strategyUsed: strategyUsed,
+                dayOffset: enrichedFinalSlot.dayOffset,
+                gapType: enrichedFinalSlot.gapType,
+                durationModified: enrichedFinalSlot.durationModified,
+                hasConflict: enrichedFinalSlot.hasConflict,
+                calendarEventsChecked: processing.calendar_events_checked,
+                debugDataSource: Object.keys(finalSlot).length > 0 ? 'finalSlot' : 'reconstructed'
+            }
+        }
+    }
+}];

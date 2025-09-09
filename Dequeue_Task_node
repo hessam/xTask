@@ -1,0 +1,104 @@
+// Process Latest Task and Clean Old Ones
+const redisUrl = "https://ethical-stud-54300.upstash.io";
+const redisToken = "AdQcAAIjcDFmNmNmMGQzYmU2NDE0ZDJmOTU1NjU3NTQyZGVhOTMzNHAxMA";
+
+try {
+  console.log(`=== PROCESSING LATEST TASK ===`);
+  
+  // Get the latest task from the RIGHT end of the list (most recent)
+  const response = await this.helpers.httpRequest({
+    method: 'POST',
+    url: redisUrl,
+    headers: { 
+      Authorization: `Bearer ${redisToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: ["RPOP", "task_queue"],
+    json: true
+  });
+  
+  // Check if we got a task
+  if (!response.result) {
+    console.log(`No tasks in queue`);
+    return []; // Queue is empty
+  }
+  
+  // Parse the latest task data
+  const taskDataStr = response.result;
+  console.log('Latest task data from queue:', taskDataStr);
+  
+  let taskData;
+  try {
+    taskData = JSON.parse(taskDataStr);
+  } catch (parseError) {
+    console.error('Failed to parse task JSON:', parseError);
+    return []; // Skip malformed task
+  }
+  
+  console.log('Parsed latest task:', taskData);
+  
+  // Clear any remaining old tasks from the queue
+  let cleanupCount = 0;
+  while (true) {
+    const cleanupResponse = await this.helpers.httpRequest({
+      method: 'POST',
+      url: redisUrl,
+      headers: { 
+        Authorization: `Bearer ${redisToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: ["RPOP", "task_queue"],
+      json: true
+    });
+    
+    if (!cleanupResponse.result) {
+      break; // No more tasks to clean
+    }
+    
+    cleanupCount++;
+    console.log(`Removed old task ${cleanupCount}`);
+  }
+  
+  if (cleanupCount > 0) {
+    console.log(`Cleaned up ${cleanupCount} old tasks`);
+  }
+  
+  // Validate task data has required fields
+  if (!taskData.chatId && !taskData.userId) {
+    console.log('Task missing chatId/userId, skipping');
+    return [];
+  }
+  
+  if (!taskData.message && !taskData.originalMessage && !taskData.extractedTitle) {
+    console.log('Task missing message content, skipping');
+    return [];
+  }
+  
+  // Process the latest task (no age check needed)
+  const now = Date.now();
+  const queuedAt = taskData.queuedAt || taskData.timestamp || now;
+  
+  console.log(`Processing latest task...`);
+  
+  // Create properly structured output
+  const processedTask = {
+    chatId: taskData.chatId || taskData.userId,
+    userId: taskData.userId || taskData.chatId,
+    originalMessage: taskData.message || taskData.originalMessage,
+    extractedTitle: taskData.title || taskData.extractedTitle || taskData.message || taskData.originalMessage,
+    timestamp: taskData.timestamp || now,
+    queuedAt: queuedAt,
+    dequeuedAt: now,
+    queueAge: now - queuedAt
+  };
+  
+  console.log('✅ Latest task processed successfully:', processedTask);
+  
+  return [{
+    json: processedTask
+  }];
+  
+} catch (error) {
+  console.error(`Processing failed:`, error.message);
+  return []; // Return empty on any error
+}

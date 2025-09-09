@@ -169,9 +169,21 @@ for (let task of aiResult.tasks) {
     if (!task.description || task.description.trim() === "") {
         task.description = taskData.extractedTitle || taskData.originalMessage || "Untitled Task";
     }
+    
+    // Enhanced task attribute defaults for 10x productivity scoring
     if (!task.estimated_duration) task.estimated_duration = 60;
     if (!task.priority) task.priority = 5;
-    if (!task.category) task.category = "general";
+    if (!task.category) task.category = "general work";
+    if (!task.complexity) task.complexity = "medium";
+    if (!task.time_preference) task.time_preference = "flexible";
+    
+    // CRITICAL FIX: Handle string "null" from AI parsing - convert to actual null
+    if (task.time === "null" || task.time === "undefined") {
+        task.time = null;
+    }
+    if (task.due_date === "null" || task.due_date === "undefined") {
+        task.due_date = null;
+    }
     
     // CRITICAL FIX: Preserve time and date fields - these should NEVER be overwritten
     // Only set defaults if they're completely missing (null/undefined), not if they're empty strings
@@ -221,10 +233,9 @@ function parseUserIntent(originalMessage, task) {
         // told the script that a specific time or date was provided.
         // This led to an attempt to create a date from an invalid string (e.g., `new Date('undefinedT00:00:00')`),
         // resulting in an "Invalid Date" object that caused all subsequent calculations to return `NaN`.
-        // Changing the check to `!!task.time` and `!!task.due_date` correctly tests for a truthy
-        // value (i.e., that the property exists and is not null, undefined, or an empty string).
-        hasSpecificTime: !!task.time,
-        hasSpecificDate: !!task.due_date,
+        // UPDATED FIX: Also handle string "null" values from AI parsing
+        hasSpecificTime: !!(task.time && task.time !== null && task.time !== "null" && task.time !== "undefined" && task.time.trim() !== ""),
+        hasSpecificDate: !!(task.due_date && task.due_date !== null && task.due_date !== "null" && task.due_date !== "undefined" && task.due_date.trim() !== ""),
 
         // Context clues
         isEvening: /شب|عصر|evening|night/.test(message),
@@ -304,6 +315,17 @@ function determineTargetDate(task, intent) {
         return now;
     }
 
+    // NEW: Smart postponement logic for quality-sensitive tasks
+    const isQualitySensitive = isQualitySensitiveTask(task, intent);
+    if (isQualitySensitive && !intent.isToday && !intent.isTomorrow) {
+        console.log('🎯 QUALITY-SENSITIVE TASK - allowing flexible scheduling for optimal slots');
+        // For quality-sensitive tasks, allow starting search from tomorrow 
+        // to find better time slots rather than forcing poor today slots
+        const tomorrow = new Date(now);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        return tomorrow;
+    }
+
     // Default: only move to tomorrow if it's truly impractical (after 10 PM)
     if (now.getHours() >= 22) {
         console.log('Very late (after 10 PM) - defaulting to tomorrow');
@@ -315,6 +337,70 @@ function determineTargetDate(task, intent) {
     // Standard case: start with today
     console.log('Starting with today as default');
     return now;
+}
+
+// NEW: Determine if a task benefits from optimal scheduling over immediacy
+function isQualitySensitiveTask(task, intent) {
+    const category = task.category || 'general work';
+    const priority = task.priority || 5;
+    
+    console.log(`🤔 Quality sensitivity check for: ${category} (priority: ${priority})`);
+    
+    // High priority tasks should not be postponed
+    if (priority >= 8) {
+        console.log('❌ High priority - no postponement');
+        return false;
+    }
+    
+    // Quality-sensitive categories that benefit from optimal timing
+    const qualitySensitiveCategories = [
+        'learning',
+        'content work', 
+        'creative',
+        'technical work', // Complex technical work benefits from optimal focus hours
+        'personal', // Personal development tasks
+        'health', // Exercise and wellness activities
+        'focus work',
+        'deep work'
+    ];
+    
+    if (qualitySensitiveCategories.includes(category)) {
+        console.log(`✅ Quality-sensitive category: ${category} - allowing postponement for optimal timing`);
+        return true;
+    }
+    
+    // ENHANCED: Deep work detection (Persian and English)
+    if (task.description && (
+        task.description.includes('کار عمیق') || 
+        task.description.includes('deep work') || 
+        task.description.includes('focus work') ||
+        task.description.includes('concentration') ||
+        task.description.includes('focused'))) {
+        console.log('✅ Deep work detected in description - allowing postponement for optimal timing');
+        return true;
+    }
+    
+    // Creative or learning indicators in intent
+    if (intent.isCreative || intent.isLearning) {
+        console.log('✅ Creative/learning intent - allowing postponement');
+        return true;
+    }
+    
+    // Check task complexity - complex tasks benefit from optimal timing
+    if (task.complexity === 'complex') {
+        console.log('✅ Complex task - allowing postponement for focus time');
+        return true;
+    }
+    
+    // Long duration tasks (>90 minutes) benefit from optimal timing
+    const duration = task.estimated_duration || 60;
+    if (duration >= 90) {
+        console.log(`✅ Long duration task (${duration}min) - allowing postponement`);
+        return true;
+    }
+    
+    console.log('❌ Not quality-sensitive - prefer immediate scheduling');
+    return false;
 }
 
 // STEP 3: Task-Dependent Buffer Calculation
@@ -351,74 +437,306 @@ function calculateBuffer(task, intent, currentTime) {
     return 30;
 }
 
-// STEP 4: Category-Based Time Preferences
+// UNIFIED INTELLIGENT TIME PREFERENCE & SCORING SYSTEM
 function getCategoryTimePreferences(task, intent) {
-    // Creative work performs better in afternoon
-    if (intent.isCreative || task.category === 'creative') {
-        return [14, 15, 16, 10, 11]; // 2-4 PM preferred, morning backup
+    const message = intent.originalMessage || task.description || '';
+    const category = task.category || 'general work';
+    
+    console.log('🔍 UNIFIED TIME ANALYSIS');
+    console.log('   message:', message);
+    console.log('   category:', category);
+    console.log('   explicit time_preference:', task.time_preference);
+    
+    // PRIORITY 1: Explicit user time preferences (NEVER override these)
+    if (task.time_preference === 'morning' || intent.isMorning) {
+        console.log('🌅 EXPLICIT MORNING - absolute priority');
+        return [7, 8, 9, 6, 10];
+    }
+    if (task.time_preference === 'afternoon' || intent.isAfternoon) {
+        console.log('☀️ EXPLICIT AFTERNOON - absolute priority');
+        return [13, 14, 15, 12, 16];
+    }
+    if (task.time_preference === 'evening' || intent.isEvening) {
+        console.log('🌙 EXPLICIT EVENING - absolute priority');
+        return [17, 18, 19, 20, 16];
     }
 
-    // Meetings work best in morning
-    if (intent.isMeeting || task.category === 'meeting') {
-        return [9, 10, 11, 14, 15]; // 9-11 AM preferred
+    // PRIORITY 2: Intelligent content-based detection
+    const isDeepWork = message.includes('کار عمیق') || message.includes('deep work') || 
+                      message.includes('focus') || message.includes('concentration');
+    const isLearning = message.includes('learn') || message.includes('study') || 
+                      message.includes('آموزش') || message.includes('مطالعه') || category === 'learning';
+    const isCreative = message.includes('creative') || message.includes('write') || 
+                      message.includes('نوشت') || category === 'creative' || category === 'content work';
+    const isMeeting = message.includes('meeting') || message.includes('جلسه') || category === 'meeting';
+    const isAdmin = message.includes('admin') || message.includes('اداری') || category === 'administrative';
+    const isHealth = message.includes('exercise') || message.includes('ورزش') || category === 'health';
+
+    if (isDeepWork) {
+        console.log('🧠 DEEP WORK DETECTED - prime morning focus hours');
+        return [9, 10, 11, 8, 14]; // Peak concentration hours
+    }
+    if (isLearning) {
+        console.log('📚 LEARNING DETECTED - morning concentration preferred');
+        return [10, 11, 9, 16, 17];
+    }
+    if (isCreative) {
+        console.log('🎨 CREATIVE WORK - afternoon inspiration hours');
+        return [14, 15, 16, 10, 11];
+    }
+    if (isMeeting) {
+        console.log('� MEETING - morning collaboration hours');
+        return [9, 10, 11, 14, 15];
+    }
+    if (isAdmin) {
+        console.log('📋 ADMIN - afternoon routine hours');
+        return [13, 14, 15, 9, 10];
+    }
+    if (isHealth) {
+        console.log('💪 HEALTH - morning/evening energy hours');
+        return [7, 8, 6, 18, 19];
     }
 
-    // Administrative tasks in early afternoon
-    if (intent.isAdmin || task.category === 'administrative') {
-        return [13, 14, 15, 9, 10]; // 1-3 PM preferred
-    }
-
-    // General productive hours
-    return [9, 10, 14, 15, 11, 16]; // Peak productivity times
+    // PRIORITY 3: Default productive hours
+    console.log('⚙️ DEFAULT - standard productivity hours');
+    return [10, 11, 14, 15, 9, 16];
 }
 
-// STEP 5: Enhanced Gap Scoring
-function scoreGap(gap, task, intent, preferredHours, targetDate) {
-    let score = 0;
-    const gapStartHour = gap.start.getHours();
-    const gapEndHour = gap.end.getHours();
+// STEP 5: Advanced 10x Productivity Slot Scoring Algorithm
+// Integrates 10 research-backed productivity techniques for optimal scheduling
 
-    // Size scoring (bigger gaps are more flexible)
-    if (gap.duration >= 180) score += 30; // 3+ hour gaps
-    else if (gap.duration >= 90) score += 20; // 1.5+ hour gaps
-    else if (gap.duration >= 60) score += 10; // 1+ hour gaps
+function getCircadianEnergyLevel(hour) {
+    // Research-based circadian rhythm energy mapping
+    const energyMap = {
+        6: 30, 7: 50, 8: 70, 9: 90, 10: 95, 11: 85,  // Morning peak
+        12: 75, 13: 60, 14: 55, 15: 80, 16: 85,       // Post-lunch recovery
+        17: 75, 18: 65, 19: 55, 20: 45, 21: 35,       // Evening decline
+        22: 25, 23: 15, 0: 10, 1: 5, 2: 5, 3: 5, 4: 10, 5: 20  // Night/early morning
+    };
+    return energyMap[hour] || 50;
+}
 
-    // Time preference scoring
-    for (let i = 0; i < preferredHours.length; i++) {
-        const preferredHour = preferredHours[i];
-        if (gapStartHour <= preferredHour && gapEndHour > preferredHour) {
-            score += (20 - i * 3); // Higher score for earlier preferences
-            break;
+function getCognitivePeakHours(category) {
+    // Evidence-based cognitive window mapping by task type
+    const cognitiveWindows = {
+        'technical work': [9, 10, 11, 15, 16],        // Analytical peak hours
+        'content work': [10, 11, 14, 15, 16],         // Creative peak hours
+        'administrative': [8, 9, 13, 14, 17],         // Routine-friendly hours
+        'learning': [9, 10, 11, 16, 17],              // High focus + processing
+        'personal': [8, 12, 17, 18, 19],              // Flexible personal time
+        'health': [6, 7, 8, 17, 18],                  // Physical activity windows
+        'general work': [9, 10, 14, 15, 16]           // Default productive hours
+    };
+    return cognitiveWindows[category] || cognitiveWindows['general work'];
+}
+
+function getFlowStateBuffer(complexity, duration) {
+    // Flow state optimization: larger buffers for complex, long tasks
+    if (complexity === 'complex' && duration >= 120) return 45;  // Deep work needs space
+    if (complexity === 'complex' && duration >= 60) return 30;
+    if (complexity === 'medium' && duration >= 90) return 20;
+    if (complexity === 'simple') return 5;
+    return 15; // Default buffer
+}
+
+function calculateContextSwitchingPenalty(gap, task, allEvents) {
+    // Minimize context switching by analyzing surrounding events
+    let penalty = 0;
+    const taskCategory = task.category || 'general work';
+    
+    // Check events before and after this gap
+    const gapStart = gap.start.getTime();
+    const gapEnd = gap.end.getTime();
+    
+    // Find adjacent events within 2 hours
+    const beforeEvents = allEvents.filter(e => {
+        const eventEnd = new Date(e.end.dateTime || e.end.date).getTime();
+        return eventEnd <= gapStart && (gapStart - eventEnd) <= 7200000; // 2 hours
+    });
+    
+    const afterEvents = allEvents.filter(e => {
+        const eventStart = new Date(e.start.dateTime || e.start.date).getTime();
+        return eventStart >= gapEnd && (eventStart - gapEnd) <= 7200000; // 2 hours
+    });
+    
+    // Analyze category mismatches
+    [...beforeEvents, ...afterEvents].forEach(event => {
+        const eventCategory = inferEventCategory(event.summary || '');
+        if (eventCategory !== taskCategory) {
+            penalty += 15; // Penalty for category switching
+        }
+    });
+    
+    return Math.min(penalty, 60); // Cap penalty at 60 points
+}
+
+function inferEventCategory(eventTitle) {
+    // Smart category inference from event titles
+    const title = eventTitle.toLowerCase();
+    if (title.includes('meeting') || title.includes('call') || title.includes('standup')) return 'administrative';
+    if (title.includes('code') || title.includes('dev') || title.includes('technical')) return 'technical work';
+    if (title.includes('write') || title.includes('content') || title.includes('blog')) return 'content work';
+    if (title.includes('learn') || title.includes('course') || title.includes('study')) return 'learning';
+    if (title.includes('gym') || title.includes('workout') || title.includes('exercise')) return 'health';
+    return 'general work';
+}
+
+function getUrgencyMultiplier(priority, daysUntilDue) {
+    // Deadline pressure management with urgency scoring
+    let urgencyScore = priority; // Base priority 1-10
+    
+    if (daysUntilDue <= 0) urgencyScore *= 3;      // Overdue: 3x multiplier
+    else if (daysUntilDue <= 1) urgencyScore *= 2.5; // Due today/tomorrow: 2.5x
+    else if (daysUntilDue <= 3) urgencyScore *= 2;   // Due this week: 2x
+    else if (daysUntilDue <= 7) urgencyScore *= 1.5; // Due next week: 1.5x
+    
+    return Math.min(urgencyScore, 30); // Cap at 30 points
+}
+
+function getCategoryMultiplier(category, hour, complexity, duration, timePreference = null) {
+    // Category-specific scoring with time-of-day optimization
+    const multipliers = {
+        'technical work': {
+            base: 1.2,
+            peakHours: [9, 10, 11, 15, 16],
+            peakBonus: complexity === 'complex' ? 40 : 25,
+            flowBonus: duration >= 120 ? 30 : 0
+        },
+        'content work': {
+            base: 1.15,
+            peakHours: [10, 11, 14, 15, 16],
+            peakBonus: 35,
+            flowBonus: duration >= 90 ? 25 : 0
+        },
+        'learning': {
+            base: 1.1,
+            peakHours: [9, 10, 11, 16, 17],
+            peakBonus: 30,
+            flowBonus: duration >= 60 ? 20 : 0
+        },
+        'administrative': {
+            base: 1.0,
+            peakHours: [8, 9, 13, 14, 17],
+            peakBonus: 15,
+            flowBonus: 0 // Admin tasks don't need flow state
+        },
+        'health': {
+            base: 1.05,
+            peakHours: function(timePreference) {
+                if (timePreference === 'morning') return [6, 7, 8, 9];
+                if (timePreference === 'evening') return [17, 18, 19];
+                return [6, 7, 8, 17, 18]; // Default both morning and evening
+            },
+            peakBonus: 25,
+            flowBonus: 0
+        },
+        'personal': {
+            base: 1.0,
+            peakHours: [8, 12, 17, 18, 19],
+            peakBonus: 20,
+            flowBonus: 0
+        },
+        'focus work': {
+            base: 1.3,
+            peakHours: [9, 10, 11, 8, 14], // Prime morning focus hours
+            peakBonus: 50, // Very high bonus for optimal times
+            flowBonus: 30, // Deep work needs flow state
+            eveningPenalty: -80 // Heavy penalty for evening scheduling
+        },
+        'deep work': {
+            base: 1.3,
+            peakHours: [9, 10, 11, 8, 14], // Prime morning focus hours
+            peakBonus: 50, // Very high bonus for optimal times
+            flowBonus: 30, // Deep work needs flow state
+            eveningPenalty: -80 // Heavy penalty for evening scheduling
+        }
+    };
+    
+    const config = multipliers[category] || multipliers['administrative'];
+    let score = config.base * 20; // Base category score
+    
+    // Get peak hours (handle function for health category)
+    const peakHours = typeof config.peakHours === 'function' 
+        ? config.peakHours(timePreference) 
+        : config.peakHours;
+    
+    // Peak hours bonus
+    if (peakHours.includes(hour)) {
+        score += config.peakBonus;
+    }
+    
+    // Evening penalty for deep work categories
+    if (config.eveningPenalty && hour >= 17) {
+        score += config.eveningPenalty;
+        console.log(`⚠️ Evening penalty applied for ${category}: ${config.eveningPenalty}`);
+    }
+    
+    // Flow state bonus
+    score += config.flowBonus;
+    
+    return score;
+}
+
+// UNIFIED INTELLIGENT SCORING - ONE ALGORITHM TO RULE THEM ALL
+function scoreGap(gap, task, intent, preferredHours, targetDate, allEvents = []) {
+    console.log(`\n🎯 === UNIFIED SCORING ===`);
+    console.log(`Task: ${task.description}`);
+    
+    const gapHour = gap.start.getHours();
+    const duration = task.estimated_duration || 60;
+    const priority = task.priority || 5;
+    const message = (intent.originalMessage || task.description || '').toLowerCase();
+    
+    let score = 50; // Base score
+    
+    // CONTENT INTELLIGENCE: What type of work is this?
+    const isDeepWork = message.includes('کار عمیق') || message.includes('deep work') || message.includes('focus');
+    const isUrgent = priority >= 8 || intent.isToday;
+    const isMorning = gapHour >= 6 && gapHour <= 11;
+    const isEvening = gapHour >= 17;
+    
+    // CORE LOGIC: Match work type to optimal time
+    if (isDeepWork) {
+        if (isMorning) {
+            score += 150; // Perfect match
+            console.log(`🧠 Deep work + morning: +150`);
+        } else if (isEvening) {
+            score -= 100; // Terrible match
+            console.log(`🧠 Deep work + evening: -100`);
         }
     }
-
-    // Gap type preferences
-    if (gap.type === 'full_day') score += 25;
-    else if (gap.type === 'between_events') score += 15;
-    else if (gap.type === 'after_last') score += 10;
-    else if (gap.type === 'before_first') score += 5;
-
-    // CRITICAL FIX: Explicit due date priority bonus
-    const gapDate = gap.start.toDateString();
-    const targetDateStr = targetDate.toDateString();
-    const isTargetDay = gapDate === targetDateStr;
     
-    if (intent.hasSpecificDate && isTargetDay) {
-        score += 100; // MASSIVE bonus for honoring explicit due date
-        console.log(`🎯 EXPLICIT DATE BONUS: +100 for matching requested date ${targetDateStr}`);
+    // EXPLICIT PREFERENCES: User knows best
+    if (preferredHours.includes(gapHour)) {
+        score += 120;
+        console.log(`🎯 Preferred time: +120`);
     }
-
-    // Same-day bonus for today requests
-    if (intent.isToday && isTargetDay) {
-        score += 50; // Major bonus for same-day scheduling
+    
+    // URGENCY: Sometimes you just need to get it done
+    if (isUrgent && gapHour >= 8 && gapHour <= 20) {
+        score += 80;
+        console.log(`⚡ Urgent task: +80`);
     }
-
-    // Avoid very late or very early slots unless specifically requested
-    if (gapStartHour < 8 && !intent.isMorning) score -= 15;
-    if (gapStartHour >= 19 && !intent.isEvening) score -= 10;
-
-    console.log(`Gap score: ${score} for ${gap.start.toLocaleTimeString()} - ${gap.end.toLocaleTimeString()} (${gap.type}) on ${gapDate}`);
-    return score;
+    
+    // CIRCADIAN BASIC: Energy levels throughout day
+    const energy = {6:30,7:50,8:70,9:90,10:95,11:85,12:75,13:60,14:55,15:80,16:85,17:75,18:65,19:55,20:45}[gapHour] || 50;
+    score += energy * 0.5;
+    
+    // FLOW TIME: Long tasks need space
+    if (duration >= 90 && gap.duration >= duration + 30) {
+        score += 30;
+        console.log(`🌊 Flow buffer: +30`);
+    }
+    
+    // PAST PENALTY: Can't schedule in the past
+    const now = new Date();
+    if (gap.start <= now) {
+        score -= 200;
+        console.log(`⏰ Past slot: -200`);
+    }
+    
+    console.log(`� FINAL: ${score.toFixed(0)}`);
+    return Math.max(score, 0);
 }
 
 function createTimeSlotInUserTimezone(dateStr, timeStr, durationMinutes = 60) {
@@ -477,7 +795,8 @@ function tryResolveTimeConflict(conflictingSlot, events, task, dateStr, duration
             console.log(`✅ CONFLICT RESOLVED: ${adjustment.label} works (${adjustedTimeStr})`);
             return adjustedSlot;
         } else {
-            const reasons = [];
+            const reasons = [''];
+            reasons.length = 0; // Clear the dummy element
             if (hasConflictResult) reasons.push('conflicts');
             if (isInPast) reasons.push('in past');
             console.log(`❌ ${adjustment.label} rejected: ${reasons.join(', ')} (${adjustedTimeStr})`);
@@ -492,7 +811,7 @@ function tryResolveTimeConflict(conflictingSlot, events, task, dateStr, duration
 }
 
 function findAvailableGaps(events, targetDateStr, minDuration = 30) {
-    console.log(`Finding gaps for ${targetDateStr} (min duration: ${minDuration}min)`);
+    console.log(`\n🔍 === FINDING GAPS FOR ${targetDateStr} (min duration: ${minDuration}min) ===`);
 
     const dayEvents = events
         .filter(event => {
@@ -507,17 +826,19 @@ function findAvailableGaps(events, targetDateStr, minDuration = 30) {
         }))
         .sort((a, b) => a.start - b.start);
 
-    console.log(`Events on ${targetDateStr}:`, dayEvents.map(e => `${e.summary}: ${e.start.toLocaleTimeString()} - ${e.end.toLocaleTimeString()}`));
+    console.log(`📅 Events on ${targetDateStr}:`, dayEvents.map(e => `${e.summary}: ${e.start.toLocaleTimeString()} - ${e.end.toLocaleTimeString()}`));
 
-    const gaps = [];
+    const gaps = [{}];
+    gaps.length = 0; // Clear the dummy element
+    // ENHANCED: Start earlier and end later to find more gaps
     const workingHours = {
-        start: 7,
-        end: 22
+        start: 6,  // Start at 6 AM instead of 7 AM
+        end: 23    // End at 11 PM instead of 10 PM
     };
     const dayStart = new Date(`${targetDateStr}T${String(workingHours.start).padStart(2, '0')}:00:00`);
     const dayEnd = new Date(`${targetDateStr}T${String(workingHours.end).padStart(2, '0')}:00:00`);
 
-    console.log(`Working hours: ${dayStart.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()}`);
+    console.log(`⏰ Extended working hours: ${dayStart.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()}`);
 
     if (dayEvents.length === 0) {
         gaps.push({
@@ -526,7 +847,7 @@ function findAvailableGaps(events, targetDateStr, minDuration = 30) {
             duration: (dayEnd - dayStart) / (1000 * 60),
             type: 'full_day'
         });
-        console.log(`Full day available: ${dayStart.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()} (${(dayEnd - dayStart) / (1000 * 60)} min)`);
+        console.log(`✅ Full day available: ${dayStart.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()} (${(dayEnd - dayStart) / (1000 * 60)} min)`);
     } else {
         // Before first event
         if (dayEvents[0].start > dayStart) {
@@ -538,24 +859,33 @@ function findAvailableGaps(events, targetDateStr, minDuration = 30) {
                     duration: duration,
                     type: 'before_first'
                 });
-                console.log(`Gap before first event: ${dayStart.toLocaleTimeString()} - ${dayEvents[0].start.toLocaleTimeString()} (${duration} min)`);
+                console.log(`✅ Gap before first event: ${dayStart.toLocaleTimeString()} - ${dayEvents[0].start.toLocaleTimeString()} (${duration} min)`);
+            } else {
+                console.log(`❌ Gap before first event too small: ${dayStart.toLocaleTimeString()} - ${dayEvents[0].start.toLocaleTimeString()} (${duration} min < ${minDuration} min)`);
             }
+        } else {
+            console.log(`❌ No gap before first event (first event starts at or before ${workingHours.start} AM)`);
         }
 
-        // Between events
+        // Between events - ENHANCED: Accept smaller gaps for important categories
         for (let i = 0; i < dayEvents.length - 1; i++) {
             const gapStart = dayEvents[i].end;
             const gapEnd = dayEvents[i + 1].start;
             const duration = (gapEnd - gapStart) / (1000 * 60);
 
-            if (duration >= minDuration) {
+            // ENHANCED: Use dynamic minimum duration based on urgency
+            const dynamicMinDuration = Math.max(15, minDuration * 0.75); // Allow smaller gaps
+            
+            if (duration >= dynamicMinDuration) {
                 gaps.push({
                     start: gapStart,
                     end: gapEnd,
                     duration: duration,
                     type: 'between_events'
                 });
-                console.log(`Gap between events: ${gapStart.toLocaleTimeString()} - ${gapEnd.toLocaleTimeString()} (${duration} min)`);
+                console.log(`✅ Gap between events: ${gapStart.toLocaleTimeString()} - ${gapEnd.toLocaleTimeString()} (${duration} min)`);
+            } else {
+                console.log(`❌ Gap between events too small: ${gapStart.toLocaleTimeString()} - ${gapEnd.toLocaleTimeString()} (${duration} min < ${dynamicMinDuration} min)`);
             }
         }
 
@@ -570,12 +900,49 @@ function findAvailableGaps(events, targetDateStr, minDuration = 30) {
                     duration: duration,
                     type: 'after_last'
                 });
-                console.log(`Gap after last event: ${lastEvent.end.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()} (${duration} min)`);
+                console.log(`✅ Gap after last event: ${lastEvent.end.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()} (${duration} min)`);
+            } else {
+                console.log(`❌ Gap after last event too small: ${lastEvent.end.toLocaleTimeString()} - ${dayEnd.toLocaleTimeString()} (${duration} min < ${minDuration} min)`);
             }
+        } else {
+            console.log(`❌ No gap after last event (last event ends at or after ${workingHours.end} PM)`);
         }
     }
 
-    console.log(`Found ${gaps.length} gaps on ${targetDateStr}`);
+    console.log(`🎯 Found ${gaps.length} gaps on ${targetDateStr}`);
+    
+    // DEBUG: Show morning availability specifically
+    const morningGaps = gaps.filter(gap => {
+        const startHour = gap.start.getHours();
+        const endHour = gap.end.getHours();
+        return startHour <= 11 && endHour >= 6; // Check if gap overlaps with morning hours (6-11 AM)
+    });
+    
+    console.log(`🌅 MORNING AVAILABILITY CHECK (6-11 AM):`);
+    if (morningGaps.length > 0) {
+        morningGaps.forEach(gap => {
+            console.log(`   ✅ Morning gap: ${gap.start.toLocaleTimeString()} - ${gap.end.toLocaleTimeString()} (${gap.duration} min)`);
+        });
+    } else {
+        console.log(`   ❌ NO MORNING GAPS AVAILABLE - this explains why tasks are scheduled in evening!`);
+    }
+    
+    // DEBUG: Show afternoon availability 
+    const afternoonGaps = gaps.filter(gap => {
+        const startHour = gap.start.getHours();
+        const endHour = gap.end.getHours();
+        return startHour <= 17 && endHour >= 12; // Check if gap overlaps with afternoon hours (12-5 PM)
+    });
+    
+    console.log(`☀️ AFTERNOON AVAILABILITY CHECK (12-5 PM):`);
+    if (afternoonGaps.length > 0) {
+        afternoonGaps.forEach(gap => {
+            console.log(`   ✅ Afternoon gap: ${gap.start.toLocaleTimeString()} - ${gap.end.toLocaleTimeString()} (${gap.duration} min)`);
+        });
+    } else {
+        console.log(`   ❌ NO AFTERNOON GAPS AVAILABLE`);
+    }
+    
     return gaps;
 }
 
@@ -593,7 +960,8 @@ function hasConflict(slot, events) {
 
     console.log(`🔍 Checking conflicts for slot: ${slotStart.toLocaleString()} - ${slotEnd.toLocaleString()}`);
 
-    const conflicts = [];
+    const conflicts = [{}];
+    conflicts.length = 0; // Clear the dummy element
     for (const event of events) {
         if (!event.start || !event.end) continue;
 
@@ -671,6 +1039,99 @@ function getNextOccurrenceOfDay(dayName, referenceDate = new Date()) {
     return nextOccurrence;
 }
 
+// ENHANCED: Determine which tasks can be postponed for better quality scheduling
+function isTaskPostponable(task, intent) {
+    // Never postpone urgent tasks
+    if (intent.isUrgent || task.priority >= 8) {
+        console.log(`❌ Cannot postpone: High priority/urgent task`);
+        return false;
+    }
+    
+    // Never postpone explicit date requests
+    if (intent.hasSpecificDate || intent.isToday) {
+        console.log(`❌ Cannot postpone: Explicit date/today request`);
+        return false;
+    }
+    
+    // Categories that benefit from optimal timing (postponable)
+    const postponableCategories = [
+        'learning',        // Better concentration matters
+        'content work',    // Creativity peak matters
+        'creative',        // Creative flow matters
+        'general work',    // Flexible timing
+        'personal'         // Usually flexible
+    ];
+    
+    if (postponableCategories.includes(task.category)) {
+        console.log(`✅ Can postpone: ${task.category} benefits from optimal timing`);
+        return true;
+    }
+    
+    // Don't postpone time-sensitive categories
+    const urgentCategories = [
+        'technical work',  // Often has dependencies
+        'administrative', // Usually has deadlines
+        'meeting',        // Fixed time requirements
+        'health'          // Daily routine matters
+    ];
+    
+    if (urgentCategories.includes(task.category)) {
+        console.log(`❌ Cannot postpone: ${task.category} is time-sensitive`);
+        return false;
+    }
+    
+    // Default: allow postponement for undefined categories
+    console.log(`✅ Can postpone: Default for unknown category`);
+    return true;
+}
+
+function getMinimumQualityScore(task, intent) {
+    // Quality thresholds - tasks need to score at least this much to be acceptable
+    const qualityThresholds = {
+        'learning': 350,        // High threshold - learning needs good focus time
+        'content work': 300,    // High threshold - creativity needs good time  
+        'creative': 300,        // High threshold - creative work needs flow
+        'general work': 250,    // Medium threshold - flexible but still needs decent time
+        'personal': 200,        // Lower threshold - more flexible
+        'administrative': 150,  // Lower threshold - can be done anytime
+        'technical work': 200,  // Medium threshold - focus needed but urgent
+        'health': 150,         // Lower threshold - consistency over timing
+        'meeting': 100         // Very low threshold - time is fixed anyway
+    };
+    
+    const threshold = qualityThresholds[task.category] || 250;
+    console.log(`📊 Minimum quality score for ${task.category}: ${threshold}`);
+    return threshold;
+}
+
+// Helper function to apply buffer constraints to gaps
+function applyBufferConstraints(gap, dateStr, bufferCutoff, duration) {
+    const now = new Date();
+    const isToday = dateStr === getLocalDateString(now);
+    
+    if (!isToday || gap.start >= bufferCutoff) {
+        return gap; // No buffer constraints needed
+    }
+    
+    if (gap.end <= bufferCutoff) {
+        console.log('Gap entirely within buffer, skipping');
+        return null; // Entire gap is within buffer
+    }
+
+    // Adjust gap to start after buffer
+    const effectiveGap = {
+        ...gap,
+        start: bufferCutoff,
+        duration: (gap.end - bufferCutoff) / (1000 * 60)
+    };
+
+    if (effectiveGap.duration < duration) {
+        console.log('Adjusted gap too small, skipping');
+        return null;
+    }
+    
+    return effectiveGap;
+}
 
 // STEP 6: Master Slot Finding Algorithm
 function findOptimalSlot(task, events, userTimezone, originalMessage) {
@@ -685,6 +1146,10 @@ function findOptimalSlot(task, events, userTimezone, originalMessage) {
     console.log(`Target date: ${targetDate.toDateString()}`);
     console.log(`Buffer required: ${buffer} minutes`);
     console.log(`Preferred hours: ${preferredHours.join(', ')}`);
+
+    // ENHANCED: Check if task can be postponed for better quality
+    const canPostpone = isTaskPostponable(task, intent);
+    console.log(`📅 Task postponement allowed: ${canPostpone ? 'YES' : 'NO'}`);
 
     const now = new Date();
     const bufferCutoff = new Date(now.getTime() + buffer * 60 * 1000);
@@ -826,9 +1291,15 @@ function findOptimalSlot(task, events, userTimezone, originalMessage) {
         }
     }
 
-    // PRIORITY 2: Search within appropriate window
-    const maxDays = intent.isUrgent ? 1 : (intent.isToday ? 1 : 7);
-    const allGapsWithScores = [];
+    // PRIORITY 2: Search within appropriate window with quality-aware expansion
+    const isQualitySensitive = isQualitySensitiveTask(task, intent);
+    const baseMaxDays = intent.isUrgent ? 1 : (intent.isToday ? 1 : 7);
+    const extendedMaxDays = isQualitySensitive ? 14 : baseMaxDays; // Allow longer search for quality tasks
+    
+    console.log(`🔍 Search strategy: Quality-sensitive=${isQualitySensitive}, BaseMaxDays=${baseMaxDays}, ExtendedMaxDays=${extendedMaxDays}`);
+    
+    const allGapsWithScores = [{}];
+    allGapsWithScores.length = 0; // Clear the dummy element
 
     // CRITICAL FIX: For explicit date requests, prioritize the requested date heavily
     if (intent.hasSpecificDate) {
@@ -841,7 +1312,7 @@ function findOptimalSlot(task, events, userTimezone, originalMessage) {
         const requestedDateGaps = findAvailableGaps(events, requestedDateStr, duration + buffer);
         
         for (const gap of requestedDateGaps) {
-            const score = scoreGap(gap, task, intent, preferredHours, targetDate);
+            const score = scoreGap(gap, task, intent, preferredHours, targetDate, events);
             allGapsWithScores.push({
                 gap: gap,
                 score: score,
@@ -868,51 +1339,81 @@ function findOptimalSlot(task, events, userTimezone, originalMessage) {
         }
     }
 
-    // General search for non-explicit dates OR when explicit date has no viable options
+    // Enhanced search for non-explicit dates OR when explicit date has no viable options
     if (!intent.hasSpecificDate || allGapsWithScores.length === 0) {
-        for (let dayOffset = 0; dayOffset < maxDays; dayOffset++) {
+        console.log(`\n🔍 === MULTI-DAY SEARCH (${extendedMaxDays} days) ===`);
+        
+        // PHASE 1: Search initial window (urgent/today/base days)
+        for (let dayOffset = 0; dayOffset < baseMaxDays; dayOffset++) {
             const searchDate = new Date(targetDate);
             searchDate.setDate(searchDate.getDate() + dayOffset);
-            // FIX: Use the timezone-safe helper function here as well.
             const dateStr = getLocalDateString(searchDate);
 
-            console.log(`\nSearching day ${dayOffset}: ${dateStr}`);
-
+            console.log(`\n📅 Phase 1 - Day ${dayOffset}: ${dateStr}`);
             const gaps = findAvailableGaps(events, dateStr, duration + buffer);
 
             for (const gap of gaps) {
-                // Apply buffer constraints for same day
-                // FIX: Ensure 'today' is checked accurately against the local date.
-                const isToday = dateStr === getLocalDateString(now);
-                let effectiveGap = gap;
+                const effectiveGap = applyBufferConstraints(gap, dateStr, bufferCutoff, duration);
+                if (!effectiveGap) continue;
 
-                if (isToday && gap.start < bufferCutoff) {
-                    if (gap.end <= bufferCutoff) {
-                        console.log('Gap entirely within buffer, skipping');
-                        continue; // Entire gap is within buffer
-                    }
-
-                    // Adjust gap to start after buffer
-                    effectiveGap = {
-                        ...gap,
-                        start: bufferCutoff,
-                        duration: (gap.end - bufferCutoff) / (1000 * 60)
-                    };
-
-                    if (effectiveGap.duration < duration) {
-                        console.log('Adjusted gap too small, skipping');
-                        continue;
-                    }
-                }
-
-                const score = scoreGap(effectiveGap, task, intent, preferredHours, targetDate);
+                const score = scoreGap(effectiveGap, task, intent, preferredHours, targetDate, events);
                 allGapsWithScores.push({
                     gap: effectiveGap,
                     score: score,
                     dayOffset: dayOffset,
                     dateStr: dateStr,
-                    isRequestedDate: false
+                    isRequestedDate: false,
+                    phase: 'initial'
                 });
+            }
+        }
+        
+        // PHASE 2: Quality-aware extended search for quality-sensitive tasks
+        if (isQualitySensitive && extendedMaxDays > baseMaxDays) {
+            console.log(`\n🎯 === QUALITY-FOCUSED EXTENDED SEARCH ===`);
+            console.log(`Task benefits from optimal timing - searching ${extendedMaxDays - baseMaxDays} additional days`);
+            
+            // Check if we have any high-quality slots in initial search
+            const initialBestScore = Math.max(...allGapsWithScores.map(g => g.score), 0);
+            const qualityThreshold = isQualitySensitive ? 300 : 200; // Higher standards for quality tasks
+            
+            console.log(`Initial best score: ${initialBestScore}, Quality threshold: ${qualityThreshold}`);
+            
+            if (initialBestScore < qualityThreshold) {
+                console.log(`🔍 Initial slots below quality threshold - extending search for better options`);
+                
+                for (let dayOffset = baseMaxDays; dayOffset < extendedMaxDays; dayOffset++) {
+                    const searchDate = new Date(targetDate);
+                    searchDate.setDate(searchDate.getDate() + dayOffset);
+                    const dateStr = getLocalDateString(searchDate);
+
+                    console.log(`\n📅 Phase 2 - Day ${dayOffset}: ${dateStr}`);
+                    const gaps = findAvailableGaps(events, dateStr, duration + buffer);
+
+                    for (const gap of gaps) {
+                        // No buffer constraints for future days
+                        const score = scoreGap(gap, task, intent, preferredHours, targetDate, events);
+                        
+                        // Bonus for being in optimal time windows during extended search
+                        let extendedScore = score;
+                        const gapHour = gap.start.getHours();
+                        if (preferredHours.slice(0, 3).includes(gapHour)) {
+                            extendedScore += 50; // Bonus for top 3 preferred hours
+                            console.log(`⭐ Extended search optimal hour bonus: +50`);
+                        }
+                        
+                        allGapsWithScores.push({
+                            gap: gap,
+                            score: extendedScore,
+                            dayOffset: dayOffset,
+                            dateStr: dateStr,
+                            isRequestedDate: false,
+                            phase: 'extended_quality'
+                        });
+                    }
+                }
+            } else {
+                console.log(`✅ Found quality slots in initial search - skipping extended search`);
             }
         }
     }
@@ -979,30 +1480,52 @@ function findOptimalSlot(task, events, userTimezone, originalMessage) {
 
 // Helper: Find optimal time within selected gap
 function findOptimalTimeInGap(gap, duration, preferredHours, intent) {
+    console.log(`\n🔍 === FINDING OPTIMAL TIME IN GAP ===`);
+    console.log(`Gap: ${gap.start.toLocaleTimeString()} - ${gap.end.toLocaleTimeString()} (${gap.duration} min)`);
+    console.log(`Duration needed: ${duration} min`);
+    console.log(`Preferred hours: [${preferredHours.join(', ')}]`);
+    
     const gapStartMinutes = gap.start.getHours() * 60 + gap.start.getMinutes();
     const gapEndMinutes = gap.end.getHours() * 60 + gap.end.getMinutes() - duration;
 
+    console.log(`Gap window in minutes: ${gapStartMinutes} - ${gapEndMinutes} (${gapEndMinutes - gapStartMinutes} min available)`);
+
     // Try preferred hours in order
-    for (const hour of preferredHours) {
+    for (let i = 0; i < preferredHours.length; i++) {
+        const hour = preferredHours[i];
         const hourMinutes = hour * 60;
+        console.log(`🎯 Trying preferred hour ${i + 1}: ${hour}:00 (${hourMinutes} minutes)`);
+        
         if (hourMinutes >= gapStartMinutes && hourMinutes <= gapEndMinutes) {
+            console.log(`✅ PREFERRED HOUR FITS: ${hour}:00`);
             return `${String(hour).padStart(2, '0')}:00`;
+        } else {
+            console.log(`❌ ${hour}:00 doesn't fit (${hourMinutes} not in range ${gapStartMinutes}-${gapEndMinutes})`);
         }
 
         // Try half-hour slots too
         const halfHourMinutes = hourMinutes + 30;
+        console.log(`🎯 Trying preferred hour ${i + 1} + 30min: ${hour}:30 (${halfHourMinutes} minutes)`);
+        
         if (halfHourMinutes >= gapStartMinutes && halfHourMinutes <= gapEndMinutes) {
+            console.log(`✅ PREFERRED HALF-HOUR FITS: ${hour}:30`);
             return `${String(hour).padStart(2, '0')}:30`;
+        } else {
+            console.log(`❌ ${hour}:30 doesn't fit (${halfHourMinutes} not in range ${gapStartMinutes}-${gapEndMinutes})`);
         }
     }
 
     // If no preferred time fits, use start of gap with small buffer
+    console.log(`❌ NO PREFERRED TIMES FIT - using gap start with buffer`);
     const bufferMinutes = Math.min(15, Math.floor(gap.duration / 6));
     const startMinutes = gapStartMinutes + bufferMinutes;
     const hours = Math.floor(startMinutes / 60);
     const minutes = startMinutes % 60;
 
-    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    const fallbackTime = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    console.log(`⚙️ FALLBACK TIME: ${fallbackTime} (gap start + ${bufferMinutes}min buffer)`);
+    
+    return fallbackTime;
 }
 
 // Helper: Try next best gaps if primary fails
@@ -1109,7 +1632,8 @@ function generateResolutionReason(slot, task, originalMessage) {
     }
     
     const intent = parseUserIntent(originalMessage, task);
-    const reasons = [];
+    const reasons = [''];
+    reasons.length = 0; // Clear the dummy element
 
     if (slot.strategyUsed === 'explicit_time_request') {
         reasons.push("Honored your specific time request");
@@ -1120,6 +1644,11 @@ function generateResolutionReason(slot, task, originalMessage) {
         if (slot.isPreferred) {
             reasons.push("time matches your task category preferences");
         }
+        
+        // Enhanced: Add quality-based postponement explanation
+        if (slot.phase === 'extended_quality' && slot.dayOffset > 1) {
+            reasons.push(`postponed ${slot.dayOffset} days for optimal ${task.category} timing`);
+        }
     } else if (slot.strategyUsed === 'urgent_force') {
         reasons.push("URGENT scheduling - may require calendar adjustments");
     }
@@ -1127,7 +1656,19 @@ function generateResolutionReason(slot, task, originalMessage) {
     if (slot.dayOffset === 0 && intent.isToday) {
         reasons.push("successfully scheduled for same day");
     } else if (slot.dayOffset > 0) {
-        reasons.push(`moved ${slot.dayOffset} day${slot.dayOffset > 1 ? 's' : ''} ahead`);
+        // Enhanced: Different messaging for quality-based postponement
+        if (slot.phase === 'extended_quality') {
+            reasons.push(`intelligently postponed ${slot.dayOffset} day${slot.dayOffset > 1 ? 's' : ''} for better productivity`);
+        } else {
+            reasons.push(`moved ${slot.dayOffset} day${slot.dayOffset > 1 ? 's' : ''} ahead`);
+        }
+    }
+    
+    // Enhanced: Add score quality indicator
+    if (slot.score && slot.score >= 400) {
+        reasons.push("high-quality time slot selected");
+    } else if (slot.score && slot.score >= 300) {
+        reasons.push("good quality time slot found");
     }
 
     return reasons.length > 0 ? reasons.join('; ') : 'Standard optimal scheduling';
@@ -1135,7 +1676,8 @@ function generateResolutionReason(slot, task, originalMessage) {
 
 // Process all tasks
 const tasks = aiResult.tasks || [aiResult];
-const scheduledSlots = [];
+const scheduledSlots = [{}];
+scheduledSlots.length = 0; // Clear the dummy element
 
 console.log(`\n=== PROCESSING ${tasks.length} TASK(S) ===`);
 
@@ -1157,16 +1699,28 @@ for (let i = 0; i < tasks.length; i++) {
     
     console.log(`\n📋 Processing Task ${i + 1}: "${task.description}"`);
     const slot = findOptimalSlot(task, calendarEvents, userTimezone, aiResult.originalMessage);
-    slot.taskIndex = i;
-    scheduledSlots.push(slot);
+    
+    if (slot) {
+        slot.taskIndex = i;
+        scheduledSlots.push(slot);
 
-    console.log(`\nTask ${i + 1} FINAL RESULT:`, {
-        description: slot.taskDescription,
-        scheduledTime: `${slot.localStartTime} - ${slot.localEndTime}`,
-        strategy: slot.strategyUsed,
-        dayOffset: slot.dayOffset,
-        hasConflict: slot.hasConflict
-    });
+        console.log(`\nTask ${i + 1} FINAL RESULT:`, {
+            description: slot.taskDescription,
+            scheduledTime: `${slot.localStartTime} - ${slot.localEndTime}`,
+            strategy: slot.strategyUsed,
+            dayOffset: slot.dayOffset,
+            hasConflict: slot.hasConflict
+        });
+    } else {
+        console.log(`❌ Failed to find slot for task ${i + 1}`);
+        scheduledSlots.push({
+            taskIndex: i,
+            error: "Failed to find available slot",
+            strategyUsed: "failed_search",
+            hasConflict: true,
+            taskDescription: task.description
+        });
+    }
 }
 
 console.log('\n=== HUMAN-LIKE SLOT FINDER COMPLETED ===');

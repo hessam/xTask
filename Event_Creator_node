@@ -2,7 +2,7 @@
 const input = items[0].json;
 const slot = input.finalSlot;
 const aiResult = input.aiResult;
-const userTimezone = input.userTimezone || "Europe/Istanbul";
+const userTimezone = $('Parse Task').first().json.debugInfo.userTimezone || "Europe/Istanbul";;
 
 console.log('=== EVENT CREATOR ===');
 console.log('User timezone:', userTimezone);
@@ -11,16 +11,17 @@ console.log('Slot object:', slot);
 
 // Check if slot exists
 if (!slot) {
-    console.log('❌ ERROR: No slot data provided');
-    return [{
-        json: {
-            error: "No slot data provided from Slot Finder",
-            input_keys: Object.keys(input),
-            user_id: input.chatId || input.userId,
-            userTimezone: userTimezone,
-            failed_at: new Date().toISOString()
-        }
-    }];
+    console.log('❌ ERROR: No slot data provided');
+    return [{
+        json: {
+            error: "No slot data provided from Slot Finder",
+            input_keys: Object.keys(input),
+            // FIXED: Use optional chaining (?.) to prevent error when aiResult is undefined
+            user_id: aiResult?.chatId || aiResult?.userId,
+            userTimezone: userTimezone,
+            failed_at: new Date().toISOString()
+        }
+    }];
 }
 
 console.log('Task:', slot.taskDescription);
@@ -30,44 +31,45 @@ console.log('Strategy:', slot.strategyUsed);
 
 // CRITICAL: Check for conflicts and refuse to create event
 if (slot.hasConflict === true) {
-    console.log('🚫 REFUSING TO CREATE EVENT - Conflict detected');
-    console.log('Conflicting events:', slot.conflictingEvents || []);
-    
-    return [{
-        json: {
-            error: "Event creation refused due to scheduling conflict",
-            conflict_details: {
-                requested_time: `${slot.localStartTime} - ${slot.localEndTime}`,
-                conflicting_events: slot.conflictingEvents || [],
-                strategy_used: slot.strategyUsed,
-                warning: slot.warning || 'Time conflict detected'
-            },
-            user_id: input.chatId || input.userId,
-            userTimezone: userTimezone,
-            task_description: slot.taskDescription,
-            refused_at: new Date().toISOString()
-        }
-    }];
+    console.log('🚫 REFUSING TO CREATE EVENT - Conflict detected');
+    console.log('Conflicting events:', slot.conflictingEvents || []);
+    
+    return [{
+        json: {
+            error: "Event creation refused due to scheduling conflict",
+            conflict_details: {
+                requested_time: `${slot.localStartTime} - ${slot.localEndTime}`,
+                conflicting_events: slot.conflictingEvents || [],
+                strategy_used: slot.strategyUsed,
+                warning: slot.warning || 'Time conflict detected'
+            },
+            // FIXED: Use optional chaining (?.) here as well for consistency
+            user_id: aiResult?.chatId || aiResult?.userId,
+            userTimezone: userTimezone,
+            task_description: slot.taskDescription,
+            refused_at: new Date().toISOString()
+        }
+    }];
 }
 
 // Create event description
 function createEventDescription(slot, task = {}) {
-    let desc = `📋 Task: ${slot.taskDescription}\n\n`;
-    
-    if (task.priority) desc += `🎯 Priority: ${task.priority}/10\n`;
-    if (task.category) desc += `📂 Category: ${task.category}\n`;
-    if (slot.duration) desc += `⏱️ Duration: ${slot.duration} minutes\n`;
-    
-    desc += `\n📅 Scheduling:\n`;
-    desc += `• User timezone: ${userTimezone}\n`;
-    desc += `• Strategy: ${slot.strategyUsed}\n`;
-    if (slot.dayOffset > 0) desc += `• Moved ${slot.dayOffset} days ahead\n`;
-    if (!slot.isPreferred) desc += `• Adjusted from preferred time\n`;
-    
-    const now = new Date();
-    desc += `\n🤖 Created by xTask on ${now.toLocaleString('en-US', { timeZone: userTimezone })}`;
-    
-    return desc;
+    let desc = `📋 Task: ${slot.taskDescription}\n\n`;
+    
+    if (task.priority) desc += `🎯 Priority: ${task.priority}/10\n`;
+    if (task.category) desc += `📂 Category: ${task.category}\n`;
+    if (slot.duration) desc += `⏱️ Duration: ${slot.duration} minutes\n`;
+    
+    desc += `\n📅 Scheduling:\n`;
+    desc += `• User timezone: ${userTimezone}\n`;
+    desc += `• Strategy: ${slot.strategyUsed}\n`;
+    if (slot.dayOffset > 0) desc += `• Moved ${slot.dayOffset} days ahead\n`;
+    if (!slot.isPreferred) desc += `• Adjusted from preferred time\n`;
+    
+    const now = new Date();
+    desc += `\n🤖 Created by xTask on ${now.toLocaleString('en-US', { timeZone: userTimezone })}`;
+    
+    return desc;
 }
 
 // Get task details for additional context
@@ -75,65 +77,66 @@ const task = aiResult?.tasks?.find(t => t.description === slot.taskDescription) 
 
 // Create calendar event - remove 'Z' from datetime when timezone is specified
 const calendarEvent = {
-    summary: slot.taskDescription,
-    description: createEventDescription(slot, task),
-    start: {
-        dateTime: slot.startTime.replace('Z', ''),
-        timeZone: userTimezone // This tells Google Calendar what timezone the user expects
-    },
-    end: {
-        dateTime: slot.endTime.replace('Z', ''),
-        timeZone: userTimezone
-    },
-    colorId: task.category === 'work' ? '1' : task.category === 'urgent' ? '11' : '2',
-    reminders: {
-        useDefault: false,
-        overrides: [
-            { method: 'popup', minutes: 15 },
-            { method: 'popup', minutes: 5 }
-        ]
-    },
-    extendedProperties: {
-        private: {
-            xtask_source: 'simplified_scheduler',
-            xtask_user_timezone: userTimezone,
-            xtask_local_start: slot.localStartTime,
-            xtask_local_end: slot.localEndTime,
-            xtask_strategy: slot.strategyUsed,
-            xtask_is_preferred: slot.isPreferred.toString()
-        }
-    }
+    summary: slot.taskDescription,
+    description: createEventDescription(slot, task),
+    start: {
+        dateTime: slot.startTime.replace('Z', '') + "+03:00",
+        timeZone: userTimezone // This tells Google Calendar what timezone the user expects
+    },
+    end: {
+        dateTime: slot.endTime.replace('Z', '') + "+03:00",
+        timeZone: userTimezone
+    },
+    colorId: task.category === 'work' ? '1' : task.category === 'urgent' ? '11' : '2',
+    reminders: {
+        useDefault: false,
+        overrides: [
+            { method: 'popup', minutes: 15 },
+            { method: 'popup', minutes: 5 }
+        ]
+    },
+    extendedProperties: {
+        private: {
+            xtask_source: 'simplified_scheduler',
+            xtask_user_timezone: userTimezone,
+            xtask_local_start: slot.localStartTime + "+03:00",
+            xtask_local_end: slot.localEndTime + "+03:00",
+            xtask_strategy: slot.strategyUsed,
+            xtask_is_preferred: slot.isPreferred.toString()
+        }
+    }
 };
 
 console.log('✅ Event prepared:');
-console.log('  Summary:', calendarEvent.summary);
-console.log('  Start (UTC):', calendarEvent.start.dateTime);
-console.log('  Start timezone:', calendarEvent.start.timeZone);
-console.log('  Local representation:', slot.localStartTime);
+console.log('  Summary:', calendarEvent.summary);
+console.log('  Start (UTC):', calendarEvent.start.dateTime);
+console.log('  Start timezone:', calendarEvent.start.timeZone);
+console.log('  Local representation:', slot.localStartTime);
 
 return [{
-    json: {
-        ...calendarEvent,
-        // Pass through data for notification
-        event_metadata: {
-            user_timezone: userTimezone,
-            local_start: slot.localStartTime,
-            local_end: slot.localEndTime,
-            task_description: slot.taskDescription,
-            is_preferred: slot.isPreferred,
-            strategy_used: slot.strategyUsed
-        },
-        // User info for notification
-        user_id: input.chatId || input.userId,
-        userTimezone: userTimezone,
-        debugInfo: {
-            eventCreatorTimestamp: new Date().toISOString(),
-            inputTimezone: userTimezone,
-            slotTimezone: slot.timezone,
-            localTimes: {
-                start: slot.localStartTime,
-                end: slot.localEndTime
-            }
-        }
-    }
+    json: {
+        ...calendarEvent,
+        // Pass through data for notification
+        event_metadata: {
+            user_timezone: userTimezone,
+            local_start: slot.localStartTime + "+03:00",
+            local_end: slot.localEndTime + "+03:00",
+            task_description: slot.taskDescription,
+            is_preferred: slot.isPreferred,
+            strategy_used: slot.strategyUsed
+        },
+        // The user_id is now correctly referenced from the aiResult object
+        user_id: aiResult.chatId || aiResult.userId,
+        userTimezone: userTimezone,
+        debugInfo: {
+            eventCreatorTimestamp: new Date().toISOString(),
+            inputTimezone: userTimezone,
+            slotTimezone: slot.timezone,
+            localTimes: {
+                start: slot.localStartTime + "+03:00",
+                end: slot.localEndTime + "+03:00"
+            }
+        }
+    }
 }];
+

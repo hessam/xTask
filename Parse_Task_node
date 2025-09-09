@@ -1,0 +1,63 @@
+// Enhanced Parse Task with timezone lookup and validation
+const redisUrl = "https://ethical-stud-54300.upstash.io";
+const redisToken = "AdQcAAIjcDFmNmNmMGQzYmU2NDE0ZDJmOTU1NjU3NTQyZGVhOTMzNHAxMA";
+const DEFAULT_TIMEZONE = 'Europe/Istanbul';
+
+// Get user timezone from Redis with validation
+async function getUserTimezone(userId) {
+    try {
+        if (!userId) {
+            console.log('No userId provided, using default timezone');
+            return DEFAULT_TIMEZONE;
+        }
+        
+        const response = await this.helpers.httpRequest({
+            method: 'POST',
+            url: redisUrl,
+            headers: { Authorization: `Bearer ${redisToken}` },
+            body: ["GET", `user_timezone:${userId}`],
+            json: true
+        });
+        
+        if (response.result) {
+            const data = JSON.parse(response.result);
+            console.log(`✅ Found timezone ${data.timezone} for user ${userId}`);
+            return data.timezone;
+        }
+        
+        console.log(`⚠️ No timezone for user ${userId}, using ${DEFAULT_TIMEZONE}`);
+        return DEFAULT_TIMEZONE;
+        
+    } catch (error) {
+        console.error('Error fetching timezone:', error);
+        return DEFAULT_TIMEZONE;
+    }
+}
+
+if (!items || items.length === 0 || !items[0].json) {
+    return [];
+}
+
+const taskData = items[0].json;
+const userId = taskData.chatId || taskData.userId;
+
+// Get user's timezone
+const userTimezone = await getUserTimezone.call(this, userId);
+
+console.log('Parse Task - User timezone:', userTimezone);
+console.log('Parse Task - Current UTC time:', new Date().toISOString());
+console.log('Parse Task - Current local time:', new Date().toLocaleString('en-US', { timeZone: userTimezone }));
+
+// Return enhanced task data with timezone
+return [{
+    json: {
+        ...taskData,
+        userTimezone: userTimezone,
+        timezoneSource: 'redis_lookup',
+        debugInfo: {
+            parseTaskTimestamp: new Date().toISOString(),
+            userTimezone: userTimezone,
+            userId: userId
+        }
+    }
+}];
